@@ -39,11 +39,150 @@ export interface VtxoVerificationOptions {
 const BATCH_OUTPUT_INDEX = 0;
 const MAX_ERRORS = 100;
 
+type PushError = (msg: string) => void;
+
 function collectErrors<T extends { valid: boolean; error?: string }>(
     results: T[],
     format: (r: T) => string
 ): string[] {
     return results.filter((r) => !r.valid).map(format);
+}
+
+function getActualParentTxids(tx: Transaction): Set<string> {
+    const parents = new Set<string>();
+    for (let inputIndex = 0; inputIndex < tx.inputsLength; inputIndex++) {
+        const input = tx.getInput(inputIndex);
+        if (input.txid) {
+            parents.add(hex.encode(input.txid));
+        }
+    }
+    return parents;
+}
+
+function validatePathTx(
+    txid: string,
+    tx: Transaction,
+    pathTxs: Map<string, Transaction>,
+    commitmentTxidSet: Set<string>,
+    declaredParents: string[],
+    pushError: PushError,
+    warnings: string[]
+): void {
+    let totalInputAmount = 0n;
+    let hasKnownInputAmount = false;
+    let missingInputAmount = false;
+
+    for (let inputIndex = 0; inputIndex < tx.inputsLength; inputIndex++) {
+        const input = tx.getInput(inputIndex);
+        if (!input.txid) {
+            pushError(`DAG tx ${txid} input ${inputIndex} has no txid`);
+            continue;
+        }
+
+        const parentTxid = hex.encode(input.txid);
+        if (!commitmentTxidSet.has(parentTxid) && !pathTxs.has(parentTxid)) {
+            pushError(
+                `DAG tx ${txid} input ${inputIndex} references unknown parent ${parentTxid}`
+            );
+        }
+
+        let inputAmount = input.witnessUtxo?.amount;
+        if (inputAmount === undefined) {
+            const parentTx = pathTxs.get(parentTxid);
+            if (parentTx) {
+                const parentOutputIndex = input.index ?? 0;
+                inputAmount = parentTx.getOutput(parentOutputIndex)?.amount;
+            }
+        }
+
+        if (inputAmount !== undefined) {
+            totalInputAmount += inputAmount;
+            hasKnownInputAmount = true;
+        } else {
+            missingInputAmount = true;
+        }
+    }
+
+    const actualParents = getActualParentTxids(tx);
+    const declaredParentSet = new Set(declaredParents);
+    const missingParents = [...actualParents].filter(
+        (parentTxid) => !declaredParentSet.has(parentTxid)
+    );
+    const unexpectedParents = declaredParents.filter(
+        (parentTxid) => !actualParents.has(parentTxid)
+    );
+
+    if (missingParents.length > 0) {
+        pushError(
+            `Chain metadata mismatch for tx ${txid}: missing parents ${missingParents.join(", ")}`
+        );
+    }
+    if (unexpectedParents.length > 0) {
+        pushError(
+            `Chain metadata mismatch for tx ${txid}: unexpected parents ${unexpectedParents.join(", ")}`
+        );
+    }
+
+    if (hasKnownInputAmount && !missingInputAmount) {
+        let outputSum = 0n;
+        for (
+            let outputIndex = 0;
+            outputIndex < tx.outputsLength;
+            outputIndex++
+        ) {
+            const output = tx.getOutput(outputIndex);
+            if (output?.amount) outputSum += output.amount;
+        }
+        if (outputSum > totalInputAmount) {
+            pushError(
+                `DAG tx ${txid} outputs (${outputSum}) exceed inputs (${totalInputAmount})`
+            );
+        }
+        return;
+    }
+
+    warnings.push(
+        `DAG tx ${txid}: could not determine all input amounts for conservation check`
+    );
+}
+
+function buildPathTreeNodes(
+    pathTxids: string[],
+    txs: string[],
+    pathTxs: Map<string, Transaction>,
+    pushError: PushError
+): TxTreeNode[] {
+    const childrenByParent = new Map<string, Record<number, string>>();
+    for (const txid of pathTxids) {
+        childrenByParent.set(txid, {});
+    }
+
+    for (const [childTxid, tx] of pathTxs) {
+        for (let inputIndex = 0; inputIndex < tx.inputsLength; inputIndex++) {
+            const input = tx.getInput(inputIndex);
+            if (!input.txid) continue;
+
+            const parentTxid = hex.encode(input.txid);
+            if (!pathTxs.has(parentTxid)) continue;
+
+            const outputIndex = input.index ?? 0;
+            const parentChildren = childrenByParent.get(parentTxid)!;
+            const existingChild = parentChildren[outputIndex];
+            if (existingChild && existingChild !== childTxid) {
+                pushError(
+                    `Multiple child txs reference parent ${parentTxid} output ${outputIndex}: ${existingChild}, ${childTxid}`
+                );
+                continue;
+            }
+            parentChildren[outputIndex] = childTxid;
+        }
+    }
+
+    return pathTxids.map((txid, index) => ({
+        txid,
+        tx: txs[index],
+        children: childrenByParent.get(txid) ?? {},
+    }));
 }
 
 /**
@@ -179,144 +318,25 @@ export async function verifyVtxo(
             );
         }
 
-        // Verify parent references for every input and check that the tx does
-        // not create value from nothing using only the amounts visible in the
-        // witness data / parent outputs we have locally.
         for (const [txid, tx] of pathTxs) {
-            let totalInputAmount = 0n;
-            let hasKnownInputAmount = false;
-            let missingInputAmount = false;
-
-            for (
-                let inputIndex = 0;
-                inputIndex < tx.inputsLength;
-                inputIndex++
-            ) {
-                const input = tx.getInput(inputIndex);
-                if (!input.txid) {
-                    pushError(`DAG tx ${txid} input ${inputIndex} has no txid`);
-                    continue;
-                }
-
-                const parentTxid = hex.encode(input.txid);
-                if (
-                    !commitmentTxidSet.has(parentTxid) &&
-                    !pathTxs.has(parentTxid)
-                ) {
-                    pushError(
-                        `DAG tx ${txid} input ${inputIndex} references unknown parent ${parentTxid}`
-                    );
-                }
-
-                let inputAmount = input.witnessUtxo?.amount;
-                if (!inputAmount) {
-                    const parentTx = pathTxs.get(parentTxid);
-                    if (parentTx) {
-                        const parentOutputIndex = input.index ?? 0;
-                        const parentOutput =
-                            parentTx.getOutput(parentOutputIndex);
-                        inputAmount = parentOutput?.amount;
-                    }
-                }
-
-                if (inputAmount !== undefined) {
-                    totalInputAmount += inputAmount;
-                    hasKnownInputAmount = true;
-                } else {
-                    missingInputAmount = true;
-                }
-            }
-
             const chainEntry = chainEntryByTxid.get(txid);
-            if (chainEntry) {
-                const declaredParents = new Set(chainEntry.spends ?? []);
-                const actualParents = new Set<string>();
-
-                for (
-                    let inputIndex = 0;
-                    inputIndex < tx.inputsLength;
-                    inputIndex++
-                ) {
-                    const input = tx.getInput(inputIndex);
-                    if (input.txid) {
-                        actualParents.add(hex.encode(input.txid));
-                    }
-                }
-
-                const missingParents = [...actualParents].filter(
-                    (parentTxid) => !declaredParents.has(parentTxid)
-                );
-                const unexpectedParents = [...declaredParents].filter(
-                    (parentTxid) => !actualParents.has(parentTxid)
-                );
-
-                if (missingParents.length > 0) {
-                    pushError(
-                        `Chain metadata mismatch for tx ${txid}: missing parents ${missingParents.join(", ")}`
-                    );
-                }
-                if (unexpectedParents.length > 0) {
-                    pushError(
-                        `Chain metadata mismatch for tx ${txid}: unexpected parents ${unexpectedParents.join(", ")}`
-                    );
-                }
-            }
-
-            if (hasKnownInputAmount && !missingInputAmount) {
-                let outputSum = 0n;
-                for (let o = 0; o < tx.outputsLength; o++) {
-                    const out = tx.getOutput(o);
-                    if (out?.amount) outputSum += out.amount;
-                }
-                if (outputSum > totalInputAmount) {
-                    pushError(
-                        `DAG tx ${txid} outputs (${outputSum}) exceed inputs (${totalInputAmount})`
-                    );
-                }
-            } else {
-                warnings.push(
-                    `DAG tx ${txid}: could not determine all input amounts for conservation check`
-                );
-            }
+            validatePathTx(
+                txid,
+                tx,
+                pathTxs,
+                commitmentTxidSet,
+                chainEntry?.spends ?? [],
+                pushError,
+                warnings
+            );
         }
 
-        // Build a minimal TxTree for sig/key verification using actual PSBT
-        // ancestry instead of trusting the order returned by the indexer.
-        const childrenByParent = new Map<string, Record<number, string>>();
-        for (const txid of pathTxids) {
-            childrenByParent.set(txid, {});
-        }
-
-        for (const [childTxid, tx] of pathTxs) {
-            for (
-                let inputIndex = 0;
-                inputIndex < tx.inputsLength;
-                inputIndex++
-            ) {
-                const input = tx.getInput(inputIndex);
-                if (!input.txid) continue;
-
-                const parentTxid = hex.encode(input.txid);
-                if (!pathTxs.has(parentTxid)) continue;
-
-                const outputIndex = input.index ?? 0;
-                const parentChildren = childrenByParent.get(parentTxid)!;
-                const existingChild = parentChildren[outputIndex];
-                if (existingChild && existingChild !== childTxid) {
-                    pushError(
-                        `Multiple child txs reference parent ${parentTxid} output ${outputIndex}: ${existingChild}, ${childTxid}`
-                    );
-                    continue;
-                }
-                parentChildren[outputIndex] = childTxid;
-            }
-        }
-
-        const pathNodes: TxTreeNode[] = pathTxids.map((txid, index) => ({
-            txid,
-            tx: txs[index],
-            children: childrenByParent.get(txid) ?? {},
-        }));
+        const pathNodes = buildPathTreeNodes(
+            pathTxids,
+            txs,
+            pathTxs,
+            pushError
+        );
 
         tree = TxTree.create(pathNodes);
         chainLength = pathTxids.length;
