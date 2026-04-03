@@ -178,8 +178,12 @@ export async function sovereignExit(
             "Virtual transactions broadcast complete (final sweep tx not yet implemented)",
     });
 
+    if (errors.length === 0) {
+        errors.push("Final sweep transaction is not implemented yet");
+    }
+
     return {
-        success: errors.length === 0,
+        success: false,
         steps,
         finalTxid: lastBroadcastTxid,
         errors,

@@ -109,9 +109,9 @@ export class TxTree {
         const nbOfOutputs = this.root.outputsLength;
         const nbOfInputs = this.root.inputsLength;
 
-        if (nbOfInputs !== 1) {
+        if (nbOfInputs < 1) {
             throw new Error(
-                `unexpected number of inputs: ${nbOfInputs}, expected 1`
+                `unexpected number of inputs: ${nbOfInputs}, expected at least 1`
             );
         }
 

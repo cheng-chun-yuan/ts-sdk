@@ -71,6 +71,27 @@ describe("verifyTaprootScriptTree", () => {
         expect(result.valid).toBe(true);
         expect(result.leafType).toBeDefined();
     });
+
+    it("should fail when tapScriptSig leaf hash does not match tapLeafScript", async () => {
+        const { tx } = await buildCSVTx();
+        const txAny = tx as any;
+        txAny.inputs[0].tapScriptSig = [
+            [
+                {
+                    pubKey: new Uint8Array(32).fill(0x02),
+                    leafHash: new Uint8Array(32).fill(0x04),
+                },
+                new Uint8Array(64).fill(0x03),
+            ],
+        ];
+
+        const result = verifyTaprootScriptTree(tx, 0);
+
+        expect(result.valid).toBe(false);
+        expect(
+            result.errors.some((e) => /leaf hash.*does not match/i.test(e))
+        ).toBe(true);
+    });
 });
 
 // ============================================================
@@ -309,6 +330,18 @@ describe("verifyHashPreimage", () => {
         expect(result.valid).toBe(true);
         expect(result.errors).toHaveLength(0);
     });
+
+    it("should fail when condition script has no supported hash opcode", async () => {
+        const { tx } = await buildConditionTx({ noHashOpcode: true });
+        const result = verifyHashPreimage(tx, 0);
+
+        expect(result.valid).toBe(false);
+        expect(
+            result.errors.some((e) =>
+                /could not detect hash operation|unsupported/i.test(e)
+            )
+        ).toBe(true);
+    });
 });
 
 // ============================================================
@@ -509,6 +542,7 @@ async function buildConditionTx(
         wrongPreimage?: boolean;
         noWitness?: boolean;
         hashAlgo?: "HASH160" | "SHA256";
+        noHashOpcode?: boolean;
     } = {}
 ) {
     const key = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
@@ -522,7 +556,9 @@ async function buildConditionTx(
     const preimageHash =
         algo === "SHA256" ? sha256(preimage) : hash160(preimage);
 
-    const conditionScript = Script.encode([algo, preimageHash, "EQUAL"]);
+    const conditionScript = opts.noHashOpcode
+        ? Script.encode(["DUP", "EQUAL"])
+        : Script.encode([algo, preimageHash, "EQUAL"]);
     const condMultisig = ConditionMultisigTapscript.encode({
         conditionScript,
         pubkeys: [pub, serverPub],

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
+import { base64, hex } from "@scure/base";
+import { randomPrivateKeyBytes } from "@scure/btc-signer/utils.js";
 import {
     sovereignExit,
     canSovereignExit,
@@ -6,6 +8,8 @@ import {
 import { InMemoryExitDataRepository } from "../../src/verification/exitDataStore";
 import type { ExitData } from "../../src/verification/exitDataStore";
 import type { OnchainProvider } from "../../src/providers/onchain";
+import { Transaction as ArkTransaction } from "../../src/utils/transaction";
+import { SingleKey } from "../../src/identity/singleKey";
 
 describe("canSovereignExit", () => {
     it("should return true when exit data exists and is valid", async () => {
@@ -56,6 +60,25 @@ describe("canSovereignExit", () => {
 
         expect(result.canExit).toBe(false);
         expect(result.reason).toMatch(/commitment.*not.*confirmed/i);
+    });
+
+    it("should return false when stored exit data is structurally invalid", async () => {
+        const repo = new InMemoryExitDataRepository();
+        const data = makeExitData();
+        data.commitmentTxid = "";
+        delete data.virtualTxs["bb".repeat(32)];
+        await repo.saveExitData(data);
+
+        const mockOnchain = createMockOnchain({ confirmed: true });
+
+        const result = await canSovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            mockOnchain
+        );
+
+        expect(result.canExit).toBe(false);
+        expect(result.reason).toMatch(/invalid exit data/i);
     });
 });
 
@@ -155,7 +178,7 @@ describe("sovereignExit", () => {
             mockOnchain
         );
 
-        expect(result.success).toBe(true);
+        expect(result.success).toBe(false);
         const waitSteps = result.steps.filter((s) => s.type === "wait");
         expect(waitSteps.length).toBeGreaterThan(0);
         const broadcastSteps = result.steps.filter(
@@ -196,6 +219,30 @@ describe("sovereignExit", () => {
 
         expect(result.success).toBe(false);
         expect(result.errors.some((e) => /missing.*psbt/i.test(e))).toBe(true);
+    });
+
+    it("should fail fast when stored exit data is invalid", async () => {
+        const repo = new InMemoryExitDataRepository();
+        const data = makeExitData();
+        data.commitmentTxid = "";
+        await repo.saveExitData(data);
+
+        const mockOnchain = createMockOnchain({
+            confirmed: true,
+            blockHeight: 1000,
+        });
+
+        const result = await sovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            mockOnchain
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.errors.some((e) => /missing commitment txid/i.test(e))).toBe(
+            true
+        );
+        expect(mockOnchain.broadcastTransaction).not.toHaveBeenCalled();
     });
 
     it("should include a done step at the end", async () => {
@@ -238,7 +285,7 @@ describe("sovereignExit", () => {
             {} as AnchorBumper
         );
 
-        expect(result.success).toBe(true);
+        expect(result.success).toBe(false);
         const waitSteps = result.steps.filter((s) => s.type === "wait");
         expect(waitSteps.length).toBeGreaterThan(0);
         const broadcastSteps = result.steps.filter(
@@ -305,6 +352,58 @@ describe("sovereignExit", () => {
 
         const lastStep = result.steps[result.steps.length - 1];
         expect(lastStep.type).toBe("done");
+    });
+
+    it("should not report success before the final sweep transaction exists", async () => {
+        const repo = new InMemoryExitDataRepository();
+        const data = makeExitData();
+        await repo.saveExitData(data);
+
+        const mockOnchain = createMockOnchain({
+            confirmed: true,
+            blockHeight: 1000,
+        });
+
+        const result = await sovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            mockOnchain
+        );
+
+        expect(result.success).toBe(false);
+    });
+
+    it("should treat duplicate broadcast errors as non-fatal for the virtual step", async () => {
+        const repo = new InMemoryExitDataRepository();
+        const data = makeExitData();
+        data.virtualTxs = {
+            ["bb".repeat(32)]: await validPsbtBase64("bb".repeat(32)),
+        };
+        await repo.saveExitData(data);
+
+        const mockOnchain = createMockOnchain({
+            confirmed: true,
+            blockHeight: 1000,
+        });
+        (mockOnchain.getTxStatus as any).mockImplementation(async () => {
+            throw new Error("not found");
+        });
+        (mockOnchain.broadcastTransaction as any).mockRejectedValue(
+            new Error("already in mempool")
+        );
+
+        const result = await sovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            mockOnchain
+        );
+
+        expect(
+            result.steps.some((s) => /already in mempool/i.test(s.description))
+        ).toBe(true);
+        expect(
+            result.errors.some((e) => /already in mempool/i.test(e))
+        ).toBe(false);
     });
 
     it("should not contact the ASP during exit", async () => {
@@ -384,4 +483,37 @@ function createMockOnchain(opts: {
         getTransactions: vi.fn(),
         watchAddresses: vi.fn(),
     } as OnchainProvider;
+}
+
+async function validPsbtBase64(seedHex: string): Promise<string> {
+    const tx = new ArkTransaction();
+    const inputKey = await SingleKey.fromPrivateKey(
+        randomPrivateKeyBytes()
+    ).xOnlyPublicKey();
+    const outputKey = await SingleKey.fromPrivateKey(
+        randomPrivateKeyBytes()
+    ).xOnlyPublicKey();
+    tx.addOutput({
+        script: taprootOutputScript(outputKey),
+        amount: 10_000n,
+    });
+    tx.addInput({
+        txid: hex.decode(seedHex),
+        index: 0,
+        witnessUtxo: {
+            script: taprootOutputScript(inputKey),
+            amount: 10_000n,
+        },
+        tapKeySig: new Uint8Array(64).fill(0x22),
+    });
+
+    return base64.encode(tx.toPSBT());
+}
+
+function taprootOutputScript(xOnlyKey: Uint8Array): Uint8Array {
+    const script = new Uint8Array(34);
+    script[0] = 0x51;
+    script[1] = 0x20;
+    script.set(xOnlyKey, 2);
+    return script;
 }
