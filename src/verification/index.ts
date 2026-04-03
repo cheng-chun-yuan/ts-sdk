@@ -17,3 +17,12 @@ export type {
 
 export { verifyOnchainAnchor } from "./onchainAnchorVerifier";
 export type { AnchorVerification } from "./onchainAnchorVerifier";
+
+export {
+    verifyTaprootScriptTree,
+    verifyCSV,
+    verifyCLTV,
+    verifyHashPreimage,
+    verifyScriptSatisfaction,
+} from "./scriptVerifier";
+export type { ScriptVerificationResult, ChainTip } from "./scriptVerifier";
