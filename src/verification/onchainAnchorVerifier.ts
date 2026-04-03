@@ -74,7 +74,7 @@ export async function verifyOnchainAnchor(
             );
         } else {
             const output = tx.getOutput(expectedOutputIndex);
-            if (!output?.amount || !output?.script) {
+            if (output?.amount === undefined || !output?.script) {
                 errors.push(
                     `Commitment tx output ${expectedOutputIndex} is missing amount or script`
                 );

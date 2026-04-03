@@ -417,6 +417,101 @@ describe("verifyVtxo", () => {
             expect(result.valid).toBe(true);
         });
 
+        it("should accept a valid root tx when the commitment link is not input 0", async () => {
+            const { tx: commit1, rawHex: commitHex1 } =
+                await buildCommitmentTx(20_000n);
+            const { tx: commit2, rawHex: commitHex2 } =
+                await buildCommitmentTx(0n);
+            const secondaryInput = await buildCsvInput({
+                parentTxid: commit2.id,
+                amount: 0n,
+                sequence: 144,
+            });
+            const commitmentInput = await buildCsvInput({
+                parentTxid: commit1.id,
+                amount: 20_000n,
+                sequence: 144,
+            });
+            const outputKey = await SingleKey.fromPrivateKey(
+                randomPrivateKeyBytes()
+            ).xOnlyPublicKey();
+            const rootTx = new ArkTransaction();
+            rootTx.addInput(secondaryInput);
+            rootTx.addInput(commitmentInput);
+            rootTx.addOutput({
+                script: taprootOutputScript(outputKey),
+                amount: 20_000n,
+            });
+            const vtxo = makeVtxo(rootTx.id, [commit1.id, commit2.id]);
+
+            (
+                mockIndexer.getVtxoChain as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                chain: [
+                    {
+                        txid: commit1.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+                        expiresAt: "",
+                        spends: [],
+                    },
+                    {
+                        txid: commit2.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+                        expiresAt: "",
+                        spends: [],
+                    },
+                    {
+                        txid: rootTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_TREE",
+                        expiresAt: "",
+                        spends: [commit1.id, commit2.id],
+                    },
+                ],
+            });
+            (
+                mockIndexer.getVirtualTxs as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                txs: [base64.encode(rootTx.toPSBT())],
+            });
+            (
+                mockOnchain.getTxHex as ReturnType<typeof vi.fn>
+            ).mockImplementation(async (txid: string) => {
+                if (txid === commit1.id) return commitHex1;
+                if (txid === commit2.id) return commitHex2;
+                throw new Error(`unknown txid ${txid}`);
+            });
+            (
+                mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                confirmed: true,
+                blockHeight: 900,
+                blockTime: 1_700_000_000,
+            });
+            (
+                mockOnchain.getChainTip as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                height: 1100,
+                time: 1_700_000_100,
+                hash: "00".repeat(32),
+            });
+            (
+                mockOnchain.getTxOutspends as ReturnType<typeof vi.fn>
+            ).mockResolvedValue([{ spent: false, txid: "" }]);
+
+            const result = await verifyVtxo(
+                vtxo,
+                mockIndexer,
+                mockOnchain,
+                serverInfo,
+                { verifySignatures: false }
+            );
+
+            if (!result.valid) {
+                throw new Error(JSON.stringify(result));
+            }
+            expect(result.valid).toBe(true);
+        });
+
         it("should fail when integrated script verification cannot fetch chain tip", async () => {
             const { tx: commitmentTx, rawHex: commitmentHex } =
                 await buildCommitmentTx(10_000n);
@@ -2327,6 +2422,31 @@ async function buildCsvPathTx(opts: {
     });
 
     return tx;
+}
+
+async function buildCsvInput(opts: {
+    parentTxid: string;
+    amount: bigint;
+    sequence: number;
+}) {
+    const signer = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
+    const signerPubkey = await signer.xOnlyPublicKey();
+    const csvScript = CSVMultisigTapscript.encode({
+        timelock: { value: 144n, type: "blocks" },
+        pubkeys: [signerPubkey],
+    });
+    const vtxoScript = new VtxoScript([csvScript.script]);
+
+    return {
+        txid: hex.decode(opts.parentTxid),
+        index: 0,
+        witnessUtxo: {
+            script: vtxoScript.pkScript,
+            amount: opts.amount,
+        },
+        tapLeafScript: [vtxoScript.leaves[0]],
+        sequence: opts.sequence,
+    };
 }
 
 async function buildCltvInput(opts: {

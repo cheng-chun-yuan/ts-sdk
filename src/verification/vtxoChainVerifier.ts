@@ -6,7 +6,11 @@ import { ChainTxType } from "../providers/indexer";
 import type { OnchainProvider } from "../providers/onchain";
 import type { RelativeTimelock } from "../script/tapscript";
 import { CSVMultisigTapscript } from "../script/tapscript";
-import { TxTree, TxTreeNode } from "../tree/txTree";
+import {
+    findInputIndexSpendingOutpoint,
+    TxTree,
+    TxTreeNode,
+} from "../tree/txTree";
 import { validateVtxoTxGraph } from "../tree/validation";
 import { verifyOnchainAnchor } from "./onchainAnchorVerifier";
 import {
@@ -185,6 +189,24 @@ function buildPathTreeNodes(
     }));
 }
 
+function findRootCommitmentInput(
+    rootTx: Transaction,
+    commitmentTxids: string[]
+): { txid: string; inputIndex: number } | null {
+    for (const commitmentTxid of commitmentTxids) {
+        const inputIndex = findInputIndexSpendingOutpoint(
+            rootTx,
+            commitmentTxid,
+            BATCH_OUTPUT_INDEX
+        );
+        if (inputIndex !== null) {
+            return { txid: commitmentTxid, inputIndex };
+        }
+    }
+
+    return null;
+}
+
 /**
  * Verifies a single VTXO by traversing the DAG from the VTXO (root)
  * backward to the batch output commitment transactions (leaves).
@@ -356,10 +378,12 @@ export async function verifyVtxo(
         const sweepTapTreeRoot = tapLeafHash(sweepScript);
 
         // Determine the primary commitment tx from tree root's actual input
-        const rootInput = tree.root.getInput(0);
-        const primaryCommitTxid = rootInput?.txid
-            ? hex.encode(rootInput.txid)
-            : allCommitmentTxids[0];
+        const rootCommitmentInput = findRootCommitmentInput(
+            tree.root,
+            allCommitmentTxids
+        );
+        const primaryCommitTxid =
+            rootCommitmentInput?.txid ?? allCommitmentTxids[0];
 
         // Fetch the primary commitment tx for validateVtxoTxGraph
         const primaryTxHex = await onchain.getTxHex(primaryCommitTxid);
@@ -540,13 +564,13 @@ export async function verifyVtxo(
             const cached = cachedCommitmentTxs.get(commitTxid);
             if (cached) {
                 const output = cached.getOutput(outputIndex);
-                if (output?.amount && output?.script) {
+                if (output?.amount !== undefined && output?.script) {
                     witnessAmount = output.amount;
                     witnessScript = output.script;
                 }
             }
 
-            if (!witnessAmount || !witnessScript) {
+            if (witnessAmount === undefined || !witnessScript) {
                 pushError(
                     `Could not determine expected output for commitment tx ${commitTxid}`
                 );

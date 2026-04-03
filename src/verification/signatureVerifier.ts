@@ -3,7 +3,7 @@ import { hex } from "@scure/base";
 import { TAPROOT_UNSPENDABLE_KEY } from "@scure/btc-signer";
 import { compareBytes } from "@scure/btc-signer/utils.js";
 import { aggregateKeys } from "../musig2";
-import { TxTree } from "../tree/txTree";
+import { findInputIndexSpendingOutpoint, TxTree } from "../tree/txTree";
 import { CosignerPublicKey, getArkPsbtFields } from "../utils/unknownFields";
 import { verifyTapscriptSignatures } from "../utils/arkTransaction";
 import { decodeTapscript } from "../script/tapscript";
@@ -186,9 +186,24 @@ export function verifyCosignerKeys(
             }
             const previousScriptKey = script.subarray(2);
 
+            const childInputIndex = findInputIndexSpendingOutpoint(
+                child.root,
+                subtree.root.id,
+                childIndex
+            );
+            if (childInputIndex === null) {
+                results.push({
+                    txid: subtree.root.id,
+                    childIndex,
+                    valid: false,
+                    error: `Child does not spend parent output ${childIndex}`,
+                });
+                continue;
+            }
+
             const cosigners = getArkPsbtFields(
                 child.root,
-                0,
+                childInputIndex,
                 CosignerPublicKey
             );
 
