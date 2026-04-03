@@ -134,6 +134,9 @@ export async function verifyVtxo(
     let chainLength: number;
     let pathTxs = new Map<string, Transaction>();
     try {
+        const chainEntryByTxid = new Map(
+            vtxoChain.chain.map((entry) => [entry.txid, entry] as const)
+        );
         const pathTxids = vtxoChain.chain
             .filter(
                 (c) => c.type === ChainTxType.TREE || c.type === ChainTxType.ARK
@@ -221,6 +224,41 @@ export async function verifyVtxo(
                     hasKnownInputAmount = true;
                 } else {
                     missingInputAmount = true;
+                }
+            }
+
+            const chainEntry = chainEntryByTxid.get(txid);
+            if (chainEntry) {
+                const declaredParents = new Set(chainEntry.spends ?? []);
+                const actualParents = new Set<string>();
+
+                for (
+                    let inputIndex = 0;
+                    inputIndex < tx.inputsLength;
+                    inputIndex++
+                ) {
+                    const input = tx.getInput(inputIndex);
+                    if (input.txid) {
+                        actualParents.add(hex.encode(input.txid));
+                    }
+                }
+
+                const missingParents = [...actualParents].filter(
+                    (parentTxid) => !declaredParents.has(parentTxid)
+                );
+                const unexpectedParents = [...declaredParents].filter(
+                    (parentTxid) => !actualParents.has(parentTxid)
+                );
+
+                if (missingParents.length > 0) {
+                    pushError(
+                        `Chain metadata mismatch for tx ${txid}: missing parents ${missingParents.join(", ")}`
+                    );
+                }
+                if (unexpectedParents.length > 0) {
+                    pushError(
+                        `Chain metadata mismatch for tx ${txid}: unexpected parents ${unexpectedParents.join(", ")}`
+                    );
                 }
             }
 
