@@ -82,6 +82,25 @@ describe("verifyTreeSignatures", () => {
             expect(result.valid).toBe(true);
         }
     });
+
+    it("should return signer keys in the result", async () => {
+        const { tree } = await buildSignedTree();
+        const results = verifyTreeSignatures(tree);
+
+        const withSigners = results.filter((r) => r.signerKeys.length > 0);
+        expect(withSigners.length).toBeGreaterThan(0);
+        expect(withSigners[0].signerKeys).toHaveLength(2); // user + server
+    });
+
+    it("should report correct txid and inputIndex", async () => {
+        const { tree } = await buildSignedTree();
+        const results = verifyTreeSignatures(tree);
+
+        for (const result of results) {
+            expect(result.txid).toBeTruthy();
+            expect(typeof result.inputIndex).toBe("number");
+        }
+    });
 });
 
 describe("verifyCosignerKeys", () => {
@@ -157,6 +176,25 @@ describe("verifyInternalKeysUnspendable", () => {
         const invalid = results.filter((r) => !r.valid);
         expect(invalid.length).toBeGreaterThan(0);
         expect(invalid[0].error).toMatch(/not.*unspendable|NUMS/i);
+    });
+
+    it("should skip inputs without tapLeafScript", async () => {
+        const { tree } = await buildSignedTree();
+        const results = verifyInternalKeysUnspendable(tree);
+
+        // Root input has no tapLeafScript — should not appear in results
+        const rootResults = results.filter((r) => r.txid === tree.root.id);
+        expect(rootResults).toHaveLength(0);
+    });
+
+    it("should check all inputs across the tree", async () => {
+        const { tree } = await buildSignedTree();
+        const results = verifyInternalKeysUnspendable(tree);
+
+        // Should have at least 1 result (the child input with tapLeafScript)
+        expect(results.length).toBeGreaterThan(0);
+        // All should be valid (NUMS key)
+        expect(results.every((r) => r.valid)).toBe(true);
     });
 });
 
