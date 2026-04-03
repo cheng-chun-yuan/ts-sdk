@@ -237,7 +237,7 @@ describe("verifyOnchainAnchor", () => {
     });
 
     describe("double-spend detection", () => {
-        it("should error when batch output has been spent", async () => {
+        it("should warn when batch output has been spent", async () => {
             (
                 mockOnchain.getTxOutspends as ReturnType<typeof vi.fn>
             ).mockResolvedValue([{ spent: true, txid: "spender-txid" }]);
@@ -252,7 +252,10 @@ describe("verifyOnchainAnchor", () => {
             );
 
             expect(result.doubleSpent).toBe(true);
-            expect(result.errors.some((e) => /spent/i.test(e))).toBe(true);
+            // Spending is reported as warning (not error) because in Ark
+            // the batch output IS spent by tree txs during normal operation
+            expect(result.warnings.some((w) => /spent/i.test(w))).toBe(true);
+            expect(result.errors.some((e) => /spent/i.test(e))).toBe(false);
         });
 
         it("should pass when batch output is unspent", async () => {
@@ -380,6 +383,89 @@ describe("verifyOnchainAnchor", () => {
         });
 
         it("should accept minDepth of 1 with exact depth match", async () => {
+            (
+                mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                confirmed: true,
+                blockHeight: 110,
+                blockTime: 1700001000,
+            });
+
+            const result = await verifyOnchainAnchor(
+                commitmentTxid,
+                expectedOutputIndex,
+                expectedAmount,
+                expectedScript,
+                mockOnchain,
+                1
+            );
+
+            expect(result.confirmationDepth).toBe(1);
+            expect(result.warnings).toHaveLength(0);
+        });
+    });
+
+    describe("output amount mismatch with real tx", () => {
+        it("should error when amount differs from expected", async () => {
+            const wrongAmount = 999_999n; // expected is 100_000n
+            const result = await verifyOnchainAnchor(
+                commitmentTxid,
+                expectedOutputIndex,
+                wrongAmount,
+                expectedScript,
+                mockOnchain,
+                6
+            );
+
+            expect(result.outputMatches).toBe(false);
+            expect(result.errors.some((e) => /amount mismatch/i.test(e))).toBe(
+                true
+            );
+        });
+
+        it("should error when script differs from expected", async () => {
+            const wrongScript = new Uint8Array(34);
+            wrongScript[0] = 0x51;
+            wrongScript[1] = 0x20;
+            wrongScript.set(new Uint8Array(32).fill(0xff), 2);
+
+            const result = await verifyOnchainAnchor(
+                commitmentTxid,
+                expectedOutputIndex,
+                expectedAmount,
+                wrongScript,
+                mockOnchain,
+                6
+            );
+
+            expect(result.outputMatches).toBe(false);
+            expect(result.errors.some((e) => /script mismatch/i.test(e))).toBe(
+                true
+            );
+        });
+    });
+
+    describe("edge cases", () => {
+        it("should handle getTxHex failure gracefully", async () => {
+            (
+                mockOnchain.getTxHex as ReturnType<typeof vi.fn>
+            ).mockRejectedValue(new Error("network error"));
+
+            const result = await verifyOnchainAnchor(
+                commitmentTxid,
+                expectedOutputIndex,
+                expectedAmount,
+                expectedScript,
+                mockOnchain,
+                6
+            );
+
+            expect(result.errors.some((e) => /network error/i.test(e))).toBe(
+                true
+            );
+        });
+
+        it("should accept minDepth of 1", async () => {
             (
                 mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
             ).mockResolvedValue({

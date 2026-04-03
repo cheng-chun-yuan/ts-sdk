@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hash160 } from "@scure/btc-signer/utils.js";
+import { hash160, sha256 } from "@scure/btc-signer/utils.js";
 import { randomPrivateKeyBytes } from "@scure/btc-signer/utils.js";
 import * as bip68 from "bip68";
 import { SingleKey } from "../../src/identity/singleKey";
@@ -24,7 +24,10 @@ import {
     verifyHashPreimage,
     verifyScriptSatisfaction,
 } from "../../src/verification/scriptVerifier";
-import type { ChainTip } from "../../src/verification/scriptVerifier";
+import type {
+    ChainTip,
+    ParentConfirmation,
+} from "../../src/verification/scriptVerifier";
 
 // ============================================================
 // §1: Taproot script tree verification
@@ -114,6 +117,94 @@ describe("verifyCSV", () => {
         const result = verifyCSV(tx, 0, chainTip);
 
         expect(result.valid).toBe(true);
+    });
+
+    it("should fail when nSequence disables relative locktime", async () => {
+        const { tx } = await buildCSVTx({
+            csvBlocks: 144n,
+            sequenceOverride: 0xffffffff,
+        });
+        const result = verifyCSV(tx, 0, chainTip);
+
+        expect(result.valid).toBe(false);
+        expect(result.errors.some((e) => /disable|sequence/i.test(e))).toBe(
+            true
+        );
+    });
+
+    it("should report leafType in the result", async () => {
+        const { tx } = await buildCSVTx({ csvBlocks: 144n });
+        const result = verifyCSV(tx, 0, chainTip);
+
+        expect(result.leafType).toBe("csv-multisig");
+    });
+
+    describe("with parentConfirmation (elapsed time check)", () => {
+        it("should pass when enough blocks have elapsed", async () => {
+            const { tx } = await buildCSVTx({ csvBlocks: 144n });
+            const parent: ParentConfirmation = {
+                blockHeight: 800,
+                blockTime: 1699999000,
+            };
+            // chainTip.height=1000, parent=800, elapsed=200 >= 144
+            const result = verifyCSV(tx, 0, chainTip, parent);
+
+            expect(result.valid).toBe(true);
+        });
+
+        it("should fail when not enough blocks have elapsed", async () => {
+            const { tx } = await buildCSVTx({ csvBlocks: 144n });
+            const parent: ParentConfirmation = {
+                blockHeight: 900,
+                blockTime: 1699999000,
+            };
+            // chainTip.height=1000, parent=900, elapsed=100 < 144
+            const result = verifyCSV(tx, 0, chainTip, parent);
+
+            expect(result.valid).toBe(false);
+            expect(
+                result.errors.some((e) =>
+                    /not yet satisfiable|elapsed/i.test(e)
+                )
+            ).toBe(true);
+        });
+
+        it("should check seconds elapsed for seconds-based CSV", async () => {
+            const { tx } = await buildCSVTx({ csvSeconds: 512n });
+            const parent: ParentConfirmation = {
+                blockHeight: 900,
+                blockTime: 1700000000 - 600, // 600s ago
+            };
+            // chainTip.time=1700000000, parent.blockTime=1700000000-600, elapsed=600 >= 512
+            const result = verifyCSV(tx, 0, chainTip, parent);
+
+            expect(result.valid).toBe(true);
+        });
+
+        it("should fail when not enough seconds have elapsed", async () => {
+            const { tx } = await buildCSVTx({ csvSeconds: 512n });
+            const parent: ParentConfirmation = {
+                blockHeight: 900,
+                blockTime: 1700000000 - 100, // only 100s ago
+            };
+            // elapsed=100 < 512
+            const result = verifyCSV(tx, 0, chainTip, parent);
+
+            expect(result.valid).toBe(false);
+            expect(
+                result.errors.some((e) =>
+                    /not yet satisfiable|elapsed/i.test(e)
+                )
+            ).toBe(true);
+        });
+
+        it("should still pass structural checks without parentConfirmation", async () => {
+            const { tx } = await buildCSVTx({ csvBlocks: 144n });
+            // No parentConfirmation — only structural check
+            const result = verifyCSV(tx, 0, chainTip);
+
+            expect(result.valid).toBe(true);
+        });
     });
 });
 
@@ -210,6 +301,14 @@ describe("verifyHashPreimage", () => {
             true
         );
     });
+
+    it("should pass when SHA256 preimage matches the script hash", async () => {
+        const { tx } = await buildConditionTx({ hashAlgo: "SHA256" });
+        const result = verifyHashPreimage(tx, 0);
+
+        expect(result.valid).toBe(true);
+        expect(result.errors).toHaveLength(0);
+    });
 });
 
 // ============================================================
@@ -251,6 +350,25 @@ describe("verifyScriptSatisfaction", () => {
         expect(result.leafType).toBe("condition-csv-multisig");
     });
 
+    it("should fail ConditionCSVMultisig when hash preimage is wrong", async () => {
+        const { tx } = await buildConditionCSVTx({ wrongPreimage: true });
+        const result = verifyScriptSatisfaction(tx, 0, chainTip);
+
+        expect(result.valid).toBe(false);
+        expect(result.leafType).toBe("condition-csv-multisig");
+        // CSV should pass but hash should fail
+        expect(result.errors.some((e) => /preimage|hash/i.test(e))).toBe(true);
+    });
+
+    it("should fail ConditionCSVMultisig when CSV sequence is wrong", async () => {
+        const { tx } = await buildConditionCSVTx({ sequenceOverride: 1 });
+        const result = verifyScriptSatisfaction(tx, 0, chainTip);
+
+        expect(result.valid).toBe(false);
+        expect(result.leafType).toBe("condition-csv-multisig");
+        expect(result.errors.some((e) => /sequence|CSV/i.test(e))).toBe(true);
+    });
+
     it("should pass for plain Multisig (no extra conditions)", async () => {
         const { tx } = await buildMultisigTx();
         const result = verifyScriptSatisfaction(tx, 0, chainTip);
@@ -259,14 +377,13 @@ describe("verifyScriptSatisfaction", () => {
         expect(result.leafType).toBe("multisig");
     });
 
-    it("should handle unknown tapscript type gracefully", async () => {
+    it("should error when tapLeafScript is missing", async () => {
         const destScript = taprootOutputScript(
             await SingleKey.fromPrivateKey(
                 randomPrivateKeyBytes()
             ).xOnlyPublicKey()
         );
         const tx = new ArkTransaction();
-        // Create an input with a non-decodable tapLeafScript
         tx.addInput({
             txid: new Uint8Array(32).fill(0x01),
             index: 0,
@@ -276,9 +393,10 @@ describe("verifyScriptSatisfaction", () => {
 
         const result = verifyScriptSatisfaction(tx, 0, chainTip);
 
-        // Should not crash, should report the issue
         expect(result.valid).toBe(false);
-        expect(result.errors.length).toBeGreaterThan(0);
+        expect(
+            result.errors.some((e) => /tapLeafScript|missing/i.test(e))
+        ).toBe(true);
     });
 });
 
@@ -390,6 +508,7 @@ async function buildConditionTx(
     opts: {
         wrongPreimage?: boolean;
         noWitness?: boolean;
+        hashAlgo?: "HASH160" | "SHA256";
     } = {}
 ) {
     const key = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
@@ -397,11 +516,13 @@ async function buildConditionTx(
     const serverKey = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
     const serverPub = await serverKey.xOnlyPublicKey();
 
+    const algo = opts.hashAlgo ?? "HASH160";
     const preimage = new Uint8Array(32);
     crypto.getRandomValues(preimage);
-    const preimageHash = hash160(preimage);
+    const preimageHash =
+        algo === "SHA256" ? sha256(preimage) : hash160(preimage);
 
-    const conditionScript = Script.encode(["HASH160", preimageHash, "EQUAL"]);
+    const conditionScript = Script.encode([algo, preimageHash, "EQUAL"]);
     const condMultisig = ConditionMultisigTapscript.encode({
         conditionScript,
         pubkeys: [pub, serverPub],
@@ -431,7 +552,12 @@ async function buildConditionTx(
     return { tx, key, pub, preimage, preimageHash };
 }
 
-async function buildConditionCSVTx() {
+async function buildConditionCSVTx(
+    opts: {
+        wrongPreimage?: boolean;
+        sequenceOverride?: number;
+    } = {}
+) {
     const key = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
     const pub = await key.xOnlyPublicKey();
 
@@ -452,17 +578,25 @@ async function buildConditionCSVTx() {
         await SingleKey.fromPrivateKey(randomPrivateKeyBytes()).xOnlyPublicKey()
     );
 
+    const sequence =
+        opts.sequenceOverride !== undefined
+            ? opts.sequenceOverride
+            : csvSequence(timelock);
+
     const tx = new ArkTransaction();
     tx.addInput({
         txid: new Uint8Array(32).fill(0x01),
         index: 0,
         witnessUtxo: { script: vtxoScript.pkScript, amount: 10_000n },
         tapLeafScript: [vtxoScript.leaves[0]],
-        sequence: csvSequence(timelock),
+        sequence,
     });
     tx.addOutput({ script: destScript, amount: 10_000n });
 
-    setArkPsbtField(tx, 0, ConditionWitness, [preimage]);
+    const witnessPreimage = opts.wrongPreimage
+        ? new Uint8Array(32).fill(0xff)
+        : preimage;
+    setArkPsbtField(tx, 0, ConditionWitness, [witnessPreimage]);
 
     return { tx, key, pub, preimage, preimageHash };
 }
