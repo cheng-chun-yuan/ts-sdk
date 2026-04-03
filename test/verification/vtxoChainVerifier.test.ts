@@ -797,6 +797,237 @@ describe("verifyVtxo", () => {
                 ).toBe(true);
             }
         });
+
+        it("should fail when a secondary commitment tx cannot be fetched", async () => {
+            const { tx: commit1, rawHex: commitHex1 } =
+                await buildCommitmentTx(20_000n);
+            const { tx: commit2 } = await buildCommitmentTx(7_000n);
+            const multiInputTx = await buildCsvPathTx({
+                parentTxid: commit1.id,
+                amount: 20_000n,
+                sequence: 144,
+                extraInputs: [{ txid: commit2.id, amount: 7_000n }],
+            });
+            const vtxo = makeVtxo(multiInputTx.id, [commit1.id, commit2.id]);
+
+            (
+                mockIndexer.getVtxoChain as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                chain: [
+                    {
+                        txid: commit1.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+                        expiresAt: "",
+                        spends: [],
+                    },
+                    {
+                        txid: commit2.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+                        expiresAt: "",
+                        spends: [],
+                    },
+                    {
+                        txid: multiInputTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_TREE",
+                        expiresAt: "",
+                        spends: [commit1.id, commit2.id],
+                    },
+                ],
+            });
+            (
+                mockIndexer.getVirtualTxs as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                txs: [base64.encode(multiInputTx.toPSBT())],
+            });
+            (
+                mockOnchain.getTxHex as ReturnType<typeof vi.fn>
+            ).mockImplementation(async (txid: string) => {
+                if (txid === commit1.id) return commitHex1;
+                if (txid === commit2.id) {
+                    throw new Error("secondary commitment unavailable");
+                }
+                throw new Error(`unknown txid ${txid}`);
+            });
+            (
+                mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                confirmed: true,
+                blockHeight: 900,
+                blockTime: 1_700_000_000,
+            });
+            (
+                mockOnchain.getChainTip as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                height: 1100,
+                time: 1_700_000_100,
+                hash: "00".repeat(32),
+            });
+            (
+                mockOnchain.getTxOutspends as ReturnType<typeof vi.fn>
+            ).mockResolvedValue([{ spent: false, txid: "" }]);
+
+            const result = await verifyVtxo(
+                vtxo,
+                mockIndexer,
+                mockOnchain,
+                serverInfo,
+                { verifySignatures: false }
+            );
+
+            expect(result.valid).toBe(false);
+            expect(
+                result.errors.some((e) =>
+                    /failed to fetch commitment tx .*secondary commitment unavailable/i.test(
+                        e
+                    )
+                )
+            ).toBe(true);
+            expect(
+                result.errors.some((e) =>
+                    /could not determine expected output/i.test(e)
+                )
+            ).toBe(true);
+        });
+
+        it("should fail when anchor status lookup fails for a commitment", async () => {
+            const { tx: commitmentTx, rawHex: commitmentHex } =
+                await buildCommitmentTx(10_000n);
+            const csvTx = await buildCsvPathTx({
+                parentTxid: commitmentTx.id,
+                amount: 10_000n,
+                sequence: 144,
+            });
+            const vtxo = makeVtxo(csvTx.id, [commitmentTx.id]);
+
+            (
+                mockIndexer.getVtxoChain as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                chain: [
+                    {
+                        txid: commitmentTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+                        expiresAt: "",
+                        spends: [],
+                    },
+                    {
+                        txid: csvTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_TREE",
+                        expiresAt: "",
+                        spends: [commitmentTx.id],
+                    },
+                ],
+            });
+            (
+                mockIndexer.getVirtualTxs as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                txs: [base64.encode(csvTx.toPSBT())],
+            });
+            (
+                mockOnchain.getTxHex as ReturnType<typeof vi.fn>
+            ).mockResolvedValue(commitmentHex);
+            (
+                mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
+            ).mockRejectedValue(new Error("status lookup failed"));
+            (
+                mockOnchain.getChainTip as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                height: 1100,
+                time: 1_700_000_100,
+                hash: "00".repeat(32),
+            });
+            (
+                mockOnchain.getTxOutspends as ReturnType<typeof vi.fn>
+            ).mockResolvedValue([{ spent: false, txid: "" }]);
+
+            const result = await verifyVtxo(
+                vtxo,
+                mockIndexer,
+                mockOnchain,
+                serverInfo,
+                { verifySignatures: false }
+            );
+
+            expect(result.valid).toBe(false);
+            expect(
+                result.errors.some((e) =>
+                    /failed to get commitment tx status: status lookup failed/i.test(
+                        e
+                    )
+                )
+            ).toBe(true);
+        });
+
+        it("should stay valid when only outspend lookup degrades to a warning", async () => {
+            const { tx: commitmentTx, rawHex: commitmentHex } =
+                await buildCommitmentTx(10_000n);
+            const csvTx = await buildCsvPathTx({
+                parentTxid: commitmentTx.id,
+                amount: 10_000n,
+                sequence: 144,
+            });
+            const vtxo = makeVtxo(csvTx.id, [commitmentTx.id]);
+
+            (
+                mockIndexer.getVtxoChain as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                chain: [
+                    {
+                        txid: commitmentTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+                        expiresAt: "",
+                        spends: [],
+                    },
+                    {
+                        txid: csvTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_TREE",
+                        expiresAt: "",
+                        spends: [commitmentTx.id],
+                    },
+                ],
+            });
+            (
+                mockIndexer.getVirtualTxs as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                txs: [base64.encode(csvTx.toPSBT())],
+            });
+            (
+                mockOnchain.getTxHex as ReturnType<typeof vi.fn>
+            ).mockResolvedValue(commitmentHex);
+            (
+                mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                confirmed: true,
+                blockHeight: 900,
+                blockTime: 1_700_000_000,
+            });
+            (
+                mockOnchain.getChainTip as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                height: 1100,
+                time: 1_700_000_100,
+                hash: "00".repeat(32),
+            });
+            (
+                mockOnchain.getTxOutspends as ReturnType<typeof vi.fn>
+            ).mockRejectedValue(new Error("outspend backend timeout"));
+
+            const result = await verifyVtxo(
+                vtxo,
+                mockIndexer,
+                mockOnchain,
+                serverInfo,
+                { verifySignatures: false }
+            );
+
+            expect(result.valid).toBe(true);
+            expect(
+                result.warnings.some((w) =>
+                    /failed to check double-spend status: outspend backend timeout/i.test(
+                        w
+                    )
+                )
+            ).toBe(true);
+        });
     });
 
     describe("checkpoint handling", () => {

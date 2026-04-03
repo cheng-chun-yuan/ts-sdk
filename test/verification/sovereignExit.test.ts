@@ -406,6 +406,42 @@ describe("sovereignExit", () => {
         );
     });
 
+    it("should surface non-duplicate broadcast failures from a valid PSBT", async () => {
+        const repo = new InMemoryExitDataRepository();
+        const data = makeExitData();
+        data.virtualTxs = {
+            ["bb".repeat(32)]: await validPsbtBase64("bb".repeat(32)),
+        };
+        await repo.saveExitData(data);
+
+        const mockOnchain = createMockOnchain({
+            confirmed: true,
+            blockHeight: 1000,
+        });
+        (mockOnchain.getTxStatus as any).mockImplementation(async () => {
+            throw new Error("not found");
+        });
+        (mockOnchain.broadcastTransaction as any).mockRejectedValue(
+            new Error("broadcast rejected")
+        );
+
+        const result = await sovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            mockOnchain
+        );
+
+        expect(result.success).toBe(false);
+        expect(
+            result.errors.some((e) =>
+                /failed to broadcast tx .*broadcast rejected/i.test(e)
+            )
+        ).toBe(true);
+        expect(
+            result.steps.some((s) => /broadcast failed/i.test(s.description))
+        ).toBe(true);
+    });
+
     it("should not contact the ASP during exit", async () => {
         const repo = new InMemoryExitDataRepository();
         const data = makeExitData();
