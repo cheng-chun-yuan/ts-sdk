@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
+import { randomPrivateKeyBytes } from "@scure/btc-signer/utils.js";
+import { Transaction } from "@scure/btc-signer";
+import { hex } from "@scure/base";
 import type { VirtualCoin } from "../../src/wallet";
+import { SingleKey } from "../../src/identity/singleKey";
 
 /**
  * Tests for Wallet.verifyVtxo() and Wallet.verifyAllVtxos() wrappers.
@@ -159,58 +163,69 @@ describe("errorMessage shared utility", () => {
     });
 });
 
-describe("compareBytes usage consistency", () => {
-    it("onchainAnchorVerifier uses compareBytes for script comparison", async () => {
-        // This is a structural check — read the source to confirm
-        const fs = await import("fs");
-        const source = fs.readFileSync(
-            "src/verification/onchainAnchorVerifier.ts",
-            "utf-8"
-        );
-        expect(source).toContain("compareBytes(output.script, expectedScript)");
-        expect(source).not.toContain(
-            "hex.encode(output.script) === hex.encode(expectedScript)"
-        );
-    });
-
-    it("signatureVerifier uses compareBytes for key comparison", async () => {
-        const fs = await import("fs");
-        const source = fs.readFileSync(
-            "src/verification/signatureVerifier.ts",
-            "utf-8"
-        );
-        expect(source).toContain(
-            "compareBytes(finalKey.slice(1), previousScriptKey)"
-        );
-        expect(source).toContain(
-            "compareBytes(internalKey, TAPROOT_UNSPENDABLE_KEY)"
-        );
-    });
-
-    it("scriptVerifier uses compareBytes for hash comparison", async () => {
-        const fs = await import("fs");
-        const source = fs.readFileSync(
-            "src/verification/scriptVerifier.ts",
-            "utf-8"
-        );
-        expect(source).toContain("compareBytes(computedHash, expectedHash)");
-        expect(source).not.toContain("hex.encode(computedHash)");
-    });
-});
-
 describe("double-spend check is warning, not error", () => {
-    it("onchainAnchorVerifier pushes to warnings for spent output", async () => {
-        const fs = await import("fs");
-        const source = fs.readFileSync(
-            "src/verification/onchainAnchorVerifier.ts",
-            "utf-8"
+    it("verifyOnchainAnchor reports spent outputs as warnings, not errors", async () => {
+        const { verifyOnchainAnchor } = await import(
+            "../../src/verification/onchainAnchorVerifier"
         );
-        // The spent-output check should push to warnings, not errors
-        const spentBlock = source.slice(
-            source.indexOf("doubleSpent = true"),
-            source.indexOf("doubleSpent = true") + 200
+
+        const outputKey = await SingleKey.fromPrivateKey(
+            randomPrivateKeyBytes()
+        ).xOnlyPublicKey();
+        const tx = new Transaction();
+        tx.addInput({
+            txid: new Uint8Array(32).fill(1),
+            index: 0,
+        });
+        tx.addOutput({
+            script: taprootOutputScript(outputKey),
+            amount: 10_000n,
+        });
+
+        const mockOnchain = {
+            getTxStatus: vi.fn().mockResolvedValue({
+                confirmed: true,
+                blockHeight: 1000,
+                blockTime: 1700000000,
+            }),
+            getChainTip: vi.fn().mockResolvedValue({
+                height: 1100,
+                time: 1700001000,
+                hash: "00".repeat(32),
+            }),
+            getTxHex: vi.fn().mockResolvedValue(hex.encode(tx.toBytes())),
+            getTxOutspends: vi
+                .fn()
+                .mockResolvedValue([{ spent: true, txid: "ff".repeat(32) }]),
+            getCoins: vi.fn(),
+            getFeeRate: vi.fn(),
+            broadcastTransaction: vi.fn(),
+            getTransactions: vi.fn(),
+            watchAddresses: vi.fn(),
+        } as any;
+
+        const result = await verifyOnchainAnchor(
+            "aa".repeat(32),
+            0,
+            10_000n,
+            taprootOutputScript(outputKey),
+            mockOnchain
         );
-        expect(spentBlock).toContain("warnings.push");
-        expect(spentBlock).not.toContain("errors.push");
+
+        expect(result.doubleSpent).toBe(true);
+        expect(
+            result.warnings.some((warning) => /has been spent/i.test(warning))
+        ).toBe(true);
+        expect(
+            result.errors.some((error) => /has been spent/i.test(error))
+        ).toBe(false);
     });
 });
+
+function taprootOutputScript(xOnlyKey: Uint8Array): Uint8Array {
+    const script = new Uint8Array(34);
+    script[0] = 0x51;
+    script[1] = 0x20;
+    script.set(xOnlyKey, 2);
+    return script;
+}
