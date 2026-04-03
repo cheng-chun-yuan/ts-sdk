@@ -2766,6 +2766,17 @@ export class Wallet extends ReadonlyWallet implements IWallet {
             options
         );
     }
+
+    /**
+     * Build a DAG visualization of a VTXO's virtual history.
+     * Returns a structured graph with nodes, edges, and checkpoint metadata.
+     */
+    async getVtxoDAG(
+        vtxo: VirtualCoin
+    ): Promise<import("../verification/dagVisualizer").VtxoDAG> {
+        const { buildVtxoDAG } = await import("../verification/dagVisualizer");
+        return buildVtxoDAG(vtxo, this.indexerProvider);
+    }
 }
 
 /**
