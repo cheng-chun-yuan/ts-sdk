@@ -280,17 +280,43 @@ export async function verifyVtxo(
             }
         }
 
-        // Build minimal TxTree for sig/key verification
-        const pathNodes: TxTreeNode[] = [];
-        for (let i = pathTxids.length - 1; i >= 0; i--) {
-            const children: Record<number, string> = {};
-            if (i > 0) {
-                const childTx = pathTxs.get(pathTxids[i - 1])!;
-                const childOutputIndex = childTx.getInput(0).index ?? 0;
-                children[childOutputIndex] = pathTxids[i - 1];
-            }
-            pathNodes.push({ txid: pathTxids[i], tx: txs[i], children });
+        // Build a minimal TxTree for sig/key verification using actual PSBT
+        // ancestry instead of trusting the order returned by the indexer.
+        const childrenByParent = new Map<string, Record<number, string>>();
+        for (const txid of pathTxids) {
+            childrenByParent.set(txid, {});
         }
+
+        for (const [childTxid, tx] of pathTxs) {
+            for (
+                let inputIndex = 0;
+                inputIndex < tx.inputsLength;
+                inputIndex++
+            ) {
+                const input = tx.getInput(inputIndex);
+                if (!input.txid) continue;
+
+                const parentTxid = hex.encode(input.txid);
+                if (!pathTxs.has(parentTxid)) continue;
+
+                const outputIndex = input.index ?? 0;
+                const parentChildren = childrenByParent.get(parentTxid)!;
+                const existingChild = parentChildren[outputIndex];
+                if (existingChild && existingChild !== childTxid) {
+                    pushError(
+                        `Multiple child txs reference parent ${parentTxid} output ${outputIndex}: ${existingChild}, ${childTxid}`
+                    );
+                    continue;
+                }
+                parentChildren[outputIndex] = childTxid;
+            }
+        }
+
+        const pathNodes: TxTreeNode[] = pathTxids.map((txid, index) => ({
+            txid,
+            tx: txs[index],
+            children: childrenByParent.get(txid) ?? {},
+        }));
 
         tree = TxTree.create(pathNodes);
         chainLength = pathTxids.length;

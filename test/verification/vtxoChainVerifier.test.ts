@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { base64, hex } from "@scure/base";
+import { tapLeafHash } from "@scure/btc-signer/payment.js";
 import { randomPrivateKeyBytes } from "@scure/btc-signer/utils.js";
 import {
     verifyVtxo,
@@ -14,6 +15,11 @@ import { CLTVMultisigTapscript } from "../../src/script/tapscript";
 import { VtxoScript } from "../../src/script/base";
 import { SingleKey } from "../../src/identity/singleKey";
 import { Transaction as ArkTransaction } from "../../src/utils/transaction";
+import {
+    CosignerPublicKey,
+    setArkPsbtField,
+} from "../../src/utils/unknownFields";
+import { aggregateKeys } from "../../src/musig2";
 
 function createMockIndexer(): IndexerProvider {
     return {
@@ -405,6 +411,9 @@ describe("verifyVtxo", () => {
                 { verifySignatures: false }
             );
 
+            if (!result.valid) {
+                throw new Error(JSON.stringify(result));
+            }
             expect(result.valid).toBe(true);
         });
 
@@ -1167,6 +1176,149 @@ describe("verifyVtxo", () => {
                     /chain metadata mismatch.*unexpected parents/i.test(e)
                 )
             ).toBe(true);
+        });
+
+        it("should verify a valid multi-hop path even when chain entries are out of order", async () => {
+            const { tx: commitmentTx, rawHex: commitmentHex } =
+                await buildCommitmentTx(10_000n);
+            const parentInputSigner = SingleKey.fromPrivateKey(
+                randomPrivateKeyBytes()
+            );
+            const parentInputSignerPubkey =
+                await parentInputSigner.xOnlyPublicKey();
+            const parentInputScript = CSVMultisigTapscript.encode({
+                timelock: { value: 144n, type: "blocks" },
+                pubkeys: [parentInputSignerPubkey],
+            });
+            const parentInputVtxoScript = new VtxoScript([
+                parentInputScript.script,
+            ]);
+            const childCosignerKey = SingleKey.fromPrivateKey(
+                randomPrivateKeyBytes()
+            );
+            const childCosignerCompressed =
+                await childCosignerKey.compressedPublicKey();
+            const sweepScript = CSVMultisigTapscript.encode({
+                timelock: serverInfo.sweepInterval,
+                pubkeys: [serverInfo.pubkey],
+            }).script;
+            const { finalKey } = aggregateKeys(
+                [childCosignerCompressed],
+                true,
+                {
+                    taprootTweak: tapLeafHash(sweepScript),
+                }
+            );
+            if (!finalKey) {
+                throw new Error("failed to derive child final key");
+            }
+            const parentTx = new ArkTransaction();
+            const parentOutputScript = taprootOutputScript(finalKey.slice(1));
+            parentTx.addInput({
+                txid: hex.decode(commitmentTx.id),
+                index: 0,
+                witnessUtxo: {
+                    script: parentInputVtxoScript.pkScript,
+                    amount: 10_000n,
+                },
+                tapLeafScript: [parentInputVtxoScript.leaves[0]],
+                sequence: 144,
+            });
+            parentTx.addOutput({
+                script: parentOutputScript,
+                amount: 10_000n,
+            });
+            const parentAnchorKey = await SingleKey.fromPrivateKey(
+                randomPrivateKeyBytes()
+            ).xOnlyPublicKey();
+            parentTx.addOutput({
+                script: taprootOutputScript(parentAnchorKey),
+                amount: 0n,
+            });
+            const leafOutputKey = await SingleKey.fromPrivateKey(
+                randomPrivateKeyBytes()
+            ).xOnlyPublicKey();
+            const leafTx = new ArkTransaction();
+            leafTx.addInput({
+                txid: hex.decode(parentTx.id),
+                index: 0,
+                witnessUtxo: {
+                    script: parentOutputScript,
+                    amount: 10_000n,
+                },
+            });
+            setArkPsbtField(leafTx, 0, CosignerPublicKey, {
+                index: 0,
+                key: childCosignerCompressed,
+            });
+            leafTx.addOutput({
+                script: taprootOutputScript(leafOutputKey),
+                amount: 10_000n,
+            });
+            const vtxo = makeVtxo(leafTx.id, [commitmentTx.id]);
+
+            (
+                mockIndexer.getVtxoChain as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                chain: [
+                    {
+                        txid: commitmentTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+                        expiresAt: "",
+                        spends: [],
+                    },
+                    {
+                        txid: parentTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_TREE",
+                        expiresAt: "",
+                        spends: [commitmentTx.id],
+                    },
+                    {
+                        txid: leafTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_TREE",
+                        expiresAt: "",
+                        spends: [parentTx.id],
+                    },
+                ],
+            });
+            (
+                mockIndexer.getVirtualTxs as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                txs: [
+                    base64.encode(parentTx.toPSBT()),
+                    base64.encode(leafTx.toPSBT()),
+                ],
+            });
+            (
+                mockOnchain.getTxHex as ReturnType<typeof vi.fn>
+            ).mockResolvedValue(commitmentHex);
+            (
+                mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                confirmed: true,
+                blockHeight: 900,
+                blockTime: 1_700_000_000,
+            });
+            (
+                mockOnchain.getChainTip as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                height: 1100,
+                time: 1_700_000_100,
+                hash: "00".repeat(32),
+            });
+            (
+                mockOnchain.getTxOutspends as ReturnType<typeof vi.fn>
+            ).mockResolvedValue([{ spent: false, txid: "" }]);
+
+            const result = await verifyVtxo(
+                vtxo,
+                mockIndexer,
+                mockOnchain,
+                serverInfo,
+                { verifySignatures: false }
+            );
+
+            expect(result.valid).toBe(true);
         });
     });
 
