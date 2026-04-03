@@ -25,4 +25,18 @@ export {
     verifyHashPreimage,
     verifyScriptSatisfaction,
 } from "./scriptVerifier";
-export type { ScriptVerificationResult, ChainTip } from "./scriptVerifier";
+export type {
+    ScriptVerificationResult,
+    ChainTip,
+    ParentConfirmation,
+} from "./scriptVerifier";
+
+export {
+    collectExitData,
+    validateExitData,
+    InMemoryExitDataRepository,
+} from "./exitDataStore";
+export type { ExitData, ExitDataRepository } from "./exitDataStore";
+
+export { sovereignExit, canSovereignExit } from "./sovereignExit";
+export type { SovereignExitStep, SovereignExitResult } from "./sovereignExit";
