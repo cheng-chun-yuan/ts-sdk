@@ -1,3 +1,4 @@
+import { errorMessage } from "./utils";
 import { hex } from "@scure/base";
 import { TAPROOT_UNSPENDABLE_KEY } from "@scure/btc-signer";
 import { compareBytes } from "@scure/btc-signer/utils.js";
@@ -91,7 +92,7 @@ export function verifyTreeSignatures(
                     inputIndex: i,
                     valid: false,
                     signerKeys: expectedSigners,
-                    error: err instanceof Error ? err.message : String(err),
+                    error: errorMessage(err),
                 });
             }
         }
@@ -225,7 +226,7 @@ export function verifyCosignerKeys(
                     txid: subtree.root.id,
                     childIndex,
                     valid: false,
-                    error: `Key aggregation failed: ${err instanceof Error ? err.message : String(err)}`,
+                    error: `Key aggregation failed: ${errorMessage(err)}`,
                 });
             }
         }

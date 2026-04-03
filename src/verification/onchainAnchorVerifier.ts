@@ -1,5 +1,7 @@
+import { errorMessage } from "./utils";
 import { hex } from "@scure/base";
 import { Transaction } from "@scure/btc-signer";
+import { compareBytes } from "@scure/btc-signer/utils.js";
 import type { OnchainProvider } from "../providers/onchain";
 
 export interface AnchorVerification {
@@ -49,9 +51,7 @@ export async function verifyOnchainAnchor(
             errors.push("Commitment transaction is not confirmed");
         }
     } catch (err) {
-        errors.push(
-            `Failed to get commitment tx status: ${err instanceof Error ? err.message : String(err)}`
-        );
+        errors.push(`Failed to get commitment tx status: ${errorMessage(err)}`);
         return {
             commitmentTxid,
             confirmed: false,
@@ -81,7 +81,7 @@ export async function verifyOnchainAnchor(
             } else {
                 const amountMatch = output.amount === expectedAmount;
                 const scriptMatch =
-                    hex.encode(output.script) === hex.encode(expectedScript);
+                    compareBytes(output.script, expectedScript) === 0;
 
                 if (!amountMatch) {
                     errors.push(
@@ -98,11 +98,14 @@ export async function verifyOnchainAnchor(
             }
         }
     } catch (err) {
-        errors.push(
-            `Failed to fetch commitment tx hex: ${err instanceof Error ? err.message : String(err)}`
-        );
+        errors.push(`Failed to fetch commitment tx hex: ${errorMessage(err)}`);
     }
 
+    // Check if the batch output has been spent. In normal Ark operation,
+    // the batch output IS spent by the tree root tx — this is expected.
+    // We report it as informational (warning), not an error, since we
+    // cannot distinguish expected tree spending from adversarial spending
+    // without the tree root txid (which is not available at this layer).
     let doubleSpent = false;
     try {
         const outspends = await onchain.getTxOutspends(commitmentTxid);
@@ -111,13 +114,13 @@ export async function verifyOnchainAnchor(
             outspends[expectedOutputIndex].spent
         ) {
             doubleSpent = true;
-            errors.push(
+            warnings.push(
                 `Commitment tx output ${expectedOutputIndex} has been spent by ${outspends[expectedOutputIndex].txid}`
             );
         }
     } catch (err) {
         warnings.push(
-            `Failed to check double-spend status: ${err instanceof Error ? err.message : String(err)}`
+            `Failed to check double-spend status: ${errorMessage(err)}`
         );
     }
 
