@@ -293,9 +293,9 @@ describe("verifyVtxo", () => {
             ).mockResolvedValue({
                 txs: [base64.encode(invalidCsvTx.toPSBT())],
             });
-            (mockOnchain.getTxHex as ReturnType<typeof vi.fn>).mockResolvedValue(
-                commitmentHex
-            );
+            (
+                mockOnchain.getTxHex as ReturnType<typeof vi.fn>
+            ).mockResolvedValue(commitmentHex);
             (
                 mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
             ).mockResolvedValue({
@@ -441,9 +441,9 @@ describe("verifyVtxo", () => {
             ).mockResolvedValue({
                 txs: [base64.encode(csvTx.toPSBT())],
             });
-            (mockOnchain.getTxHex as ReturnType<typeof vi.fn>).mockResolvedValue(
-                commitmentHex
-            );
+            (
+                mockOnchain.getTxHex as ReturnType<typeof vi.fn>
+            ).mockResolvedValue(commitmentHex);
             (
                 mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
             ).mockResolvedValue({
@@ -507,9 +507,9 @@ describe("verifyVtxo", () => {
             ).mockResolvedValue({
                 txs: [base64.encode(csvTx.toPSBT())],
             });
-            (mockOnchain.getTxHex as ReturnType<typeof vi.fn>).mockResolvedValue(
-                commitmentHex
-            );
+            (
+                mockOnchain.getTxHex as ReturnType<typeof vi.fn>
+            ).mockResolvedValue(commitmentHex);
             (
                 mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
             ).mockResolvedValue({
@@ -626,8 +626,94 @@ describe("verifyVtxo", () => {
             );
 
             expect(result.valid).toBe(false);
+            expect(result.errors.some((e) => /locktime|cltv/i.test(e))).toBe(
+                true
+            );
+        });
+
+        it("should fail when a non-primary input references an unknown parent", async () => {
+            const { tx: commit1, rawHex: commitHex1 } =
+                await buildCommitmentTx(20_000n);
+            const { tx: commit2, rawHex: commitHex2 } =
+                await buildCommitmentTx(7_000n);
+            const mixedTx = await buildCsvPathTx({
+                parentTxid: commit1.id,
+                amount: 20_000n,
+                sequence: 144,
+                extraInputs: [
+                    {
+                        txid: "ef".repeat(32),
+                        amount: 7_000n,
+                    },
+                ],
+            });
+            const vtxo = makeVtxo(mixedTx.id, [commit1.id, commit2.id]);
+
+            (
+                mockIndexer.getVtxoChain as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                chain: [
+                    {
+                        txid: commit1.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+                        expiresAt: "",
+                        spends: [],
+                    },
+                    {
+                        txid: commit2.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+                        expiresAt: "",
+                        spends: [],
+                    },
+                    {
+                        txid: mixedTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_TREE",
+                        expiresAt: "",
+                        spends: [commit1.id, commit2.id],
+                    },
+                ],
+            });
+            (
+                mockIndexer.getVirtualTxs as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                txs: [base64.encode(mixedTx.toPSBT())],
+            });
+            (
+                mockOnchain.getTxHex as ReturnType<typeof vi.fn>
+            ).mockImplementation(async (txid: string) => {
+                if (txid === commit1.id) return commitHex1;
+                if (txid === commit2.id) return commitHex2;
+                throw new Error(`unknown txid ${txid}`);
+            });
+            (
+                mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                confirmed: true,
+                blockHeight: 900,
+                blockTime: 1_700_000_000,
+            });
+            (
+                mockOnchain.getChainTip as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                height: 1100,
+                time: 1_700_000_100,
+                hash: "00".repeat(32),
+            });
+            (
+                mockOnchain.getTxOutspends as ReturnType<typeof vi.fn>
+            ).mockResolvedValue([{ spent: false, txid: "" }]);
+
+            const result = await verifyVtxo(
+                vtxo,
+                mockIndexer,
+                mockOnchain,
+                serverInfo,
+                { verifySignatures: false }
+            );
+
+            expect(result.valid).toBe(false);
             expect(
-                result.errors.some((e) => /locktime|cltv/i.test(e))
+                result.errors.some((e) => /references unknown parent/i.test(e))
             ).toBe(true);
         });
 
@@ -1629,7 +1715,7 @@ function makeVtxo(
             batchTxid: commitmentTxIds[0] ?? "",
             commitmentTxIds,
         },
-        } as VirtualCoin;
+    } as VirtualCoin;
 }
 
 function taprootOutputScript(xOnlyKey: Uint8Array): Uint8Array {

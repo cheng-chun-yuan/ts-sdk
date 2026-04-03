@@ -239,9 +239,9 @@ describe("sovereignExit", () => {
         );
 
         expect(result.success).toBe(false);
-        expect(result.errors.some((e) => /missing commitment txid/i.test(e))).toBe(
-            true
-        );
+        expect(
+            result.errors.some((e) => /missing commitment txid/i.test(e))
+        ).toBe(true);
         expect(mockOnchain.broadcastTransaction).not.toHaveBeenCalled();
     });
 
@@ -401,9 +401,9 @@ describe("sovereignExit", () => {
         expect(
             result.steps.some((s) => /already in mempool/i.test(s.description))
         ).toBe(true);
-        expect(
-            result.errors.some((e) => /already in mempool/i.test(e))
-        ).toBe(false);
+        expect(result.errors.some((e) => /already in mempool/i.test(e))).toBe(
+            false
+        );
     });
 
     it("should not contact the ASP during exit", async () => {

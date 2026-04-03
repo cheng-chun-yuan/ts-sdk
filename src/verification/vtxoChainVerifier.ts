@@ -176,50 +176,68 @@ export async function verifyVtxo(
             );
         }
 
-        // Verify parent references: each tx's input must reference
-        // either another virtual tx in the DAG or a commitment tx
+        // Verify parent references for every input and check that the tx does
+        // not create value from nothing using only the amounts visible in the
+        // witness data / parent outputs we have locally.
         for (const [txid, tx] of pathTxs) {
-            const input = tx.getInput(0);
-            if (!input.txid) {
-                pushError(`DAG tx ${txid} input 0 has no txid`);
-                continue;
-            }
+            let totalInputAmount = 0n;
+            let hasKnownInputAmount = false;
+            let missingInputAmount = false;
 
-            const parentTxid = hex.encode(input.txid);
-            if (
-                !commitmentTxidSet.has(parentTxid) &&
-                !pathTxs.has(parentTxid)
+            for (
+                let inputIndex = 0;
+                inputIndex < tx.inputsLength;
+                inputIndex++
             ) {
-                pushError(
-                    `DAG tx ${txid} references unknown parent ${parentTxid}`
-                );
-            }
+                const input = tx.getInput(inputIndex);
+                if (!input.txid) {
+                    pushError(`DAG tx ${txid} input ${inputIndex} has no txid`);
+                    continue;
+                }
 
-            // Amount conservation
-            let inputAmount = input.witnessUtxo?.amount;
-            if (!inputAmount) {
-                const parentTx = pathTxs.get(parentTxid);
-                if (parentTx) {
-                    const parentOutputIndex = input.index ?? 0;
-                    const parentOutput = parentTx.getOutput(parentOutputIndex);
-                    inputAmount = parentOutput?.amount;
+                const parentTxid = hex.encode(input.txid);
+                if (
+                    !commitmentTxidSet.has(parentTxid) &&
+                    !pathTxs.has(parentTxid)
+                ) {
+                    pushError(
+                        `DAG tx ${txid} input ${inputIndex} references unknown parent ${parentTxid}`
+                    );
+                }
+
+                let inputAmount = input.witnessUtxo?.amount;
+                if (!inputAmount) {
+                    const parentTx = pathTxs.get(parentTxid);
+                    if (parentTx) {
+                        const parentOutputIndex = input.index ?? 0;
+                        const parentOutput =
+                            parentTx.getOutput(parentOutputIndex);
+                        inputAmount = parentOutput?.amount;
+                    }
+                }
+
+                if (inputAmount !== undefined) {
+                    totalInputAmount += inputAmount;
+                    hasKnownInputAmount = true;
+                } else {
+                    missingInputAmount = true;
                 }
             }
 
-            if (inputAmount) {
+            if (hasKnownInputAmount && !missingInputAmount) {
                 let outputSum = 0n;
                 for (let o = 0; o < tx.outputsLength; o++) {
                     const out = tx.getOutput(o);
                     if (out?.amount) outputSum += out.amount;
                 }
-                if (outputSum > inputAmount) {
+                if (outputSum > totalInputAmount) {
                     pushError(
-                        `DAG tx ${txid} outputs (${outputSum}) exceed input (${inputAmount})`
+                        `DAG tx ${txid} outputs (${outputSum}) exceed inputs (${totalInputAmount})`
                     );
                 }
             } else {
                 warnings.push(
-                    `DAG tx ${txid}: could not determine input amount for conservation check`
+                    `DAG tx ${txid}: could not determine all input amounts for conservation check`
                 );
             }
         }
@@ -333,7 +351,7 @@ export async function verifyVtxo(
             );
         }
     } catch (err) {
-            pushError(`VTXO lookup error: ${errorMessage(err)}`);
+        pushError(`VTXO lookup error: ${errorMessage(err)}`);
     }
 
     // Step 3e: Verify tapscript satisfaction for every tapscript input.
@@ -343,7 +361,11 @@ export async function verifyVtxo(
     try {
         const chainTip = await onchain.getChainTip();
         for (const [txid, tx] of pathTxs) {
-            for (let inputIndex = 0; inputIndex < tx.inputsLength; inputIndex++) {
+            for (
+                let inputIndex = 0;
+                inputIndex < tx.inputsLength;
+                inputIndex++
+            ) {
                 const input = tx.getInput(inputIndex);
                 if (!input.tapLeafScript || input.tapLeafScript.length === 0) {
                     continue;
@@ -357,7 +379,8 @@ export async function verifyVtxo(
                     const parentTxid = hex.encode(input.txid);
                     if (commitmentTxidSet.has(parentTxid)) {
                         try {
-                            const status = await onchain.getTxStatus(parentTxid);
+                            const status =
+                                await onchain.getTxStatus(parentTxid);
                             if (status.confirmed) {
                                 parentConfirmation = {
                                     blockHeight: status.blockHeight,
