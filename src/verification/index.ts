@@ -40,3 +40,6 @@ export type { ExitData, ExitDataRepository } from "./exitDataStore";
 
 export { sovereignExit, canSovereignExit } from "./sovereignExit";
 export type { SovereignExitStep, SovereignExitResult } from "./sovereignExit";
+
+export { buildVtxoDAG, renderDAGAscii } from "./dagVisualizer";
+export type { DAGNode, DAGEdge, VtxoDAG } from "./dagVisualizer";

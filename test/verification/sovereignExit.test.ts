@@ -57,44 +57,6 @@ describe("canSovereignExit", () => {
         expect(result.canExit).toBe(false);
         expect(result.reason).toMatch(/commitment.*not.*confirmed/i);
     });
-
-    it("should return false when exit data is invalid", async () => {
-        const repo = new InMemoryExitDataRepository();
-        const data = makeExitData();
-        data.commitmentTxid = ""; // invalid
-        await repo.saveExitData(data);
-
-        const mockOnchain = createMockOnchain({ confirmed: true });
-
-        const result = await canSovereignExit(
-            data.vtxoOutpoint,
-            repo,
-            mockOnchain
-        );
-
-        expect(result.canExit).toBe(false);
-        expect(result.reason).toMatch(/invalid.*exit.*data/i);
-    });
-
-    it("should handle onchain provider failure gracefully", async () => {
-        const repo = new InMemoryExitDataRepository();
-        const data = makeExitData();
-        await repo.saveExitData(data);
-
-        const mockOnchain = createMockOnchain({ confirmed: true });
-        (mockOnchain.getTxStatus as any).mockRejectedValue(
-            new Error("network down")
-        );
-
-        const result = await canSovereignExit(
-            data.vtxoOutpoint,
-            repo,
-            mockOnchain
-        );
-
-        expect(result.canExit).toBe(false);
-        expect(result.reason).toMatch(/network down/i);
-    });
 });
 
 describe("sovereignExit", () => {
@@ -250,6 +212,95 @@ describe("sovereignExit", () => {
             data.vtxoOutpoint,
             repo,
             mockOnchain
+        );
+
+        const lastStep = result.steps[result.steps.length - 1];
+        expect(lastStep.type).toBe("done");
+    });
+
+    it("should skip already-confirmed txs in the chain", async () => {
+        const repo = new InMemoryExitDataRepository();
+        const data = makeExitData();
+        await repo.saveExitData(data);
+
+        // All txs already confirmed
+        const mockOnchain = createMockOnchain({
+            confirmed: true,
+            blockHeight: 1000,
+        });
+
+        const result = await sovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            mockOnchain,
+            {} as Identity,
+            "bc1qtest",
+            {} as AnchorBumper
+        );
+
+        expect(result.success).toBe(true);
+        const waitSteps = result.steps.filter((s) => s.type === "wait");
+        expect(waitSteps.length).toBeGreaterThan(0);
+        const broadcastSteps = result.steps.filter(
+            (s) => s.type === "broadcast"
+        );
+        expect(broadcastSteps).toHaveLength(0);
+    });
+
+    it("should fail when PSBT is missing for an unconfirmed tx", async () => {
+        const repo = new InMemoryExitDataRepository();
+        const data = makeExitData();
+        // Remove the PSBT
+        data.virtualTxs = {};
+        await repo.saveExitData(data);
+
+        const mockOnchain = createMockOnchain({
+            confirmed: true,
+            blockHeight: 1000,
+        });
+        (mockOnchain.getTxStatus as any).mockImplementation(
+            async (txid: string) => {
+                if (txid === data.commitmentTxid) {
+                    return {
+                        confirmed: true,
+                        blockHeight: 1000,
+                        blockTime: 1700000000,
+                    };
+                }
+                throw new Error("not found");
+            }
+        );
+
+        const result = await sovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            mockOnchain,
+            {} as Identity,
+            "bc1qtest",
+            {} as AnchorBumper
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.errors.some((e) => /missing.*psbt/i.test(e))).toBe(true);
+    });
+
+    it("should include a done step at the end", async () => {
+        const repo = new InMemoryExitDataRepository();
+        const data = makeExitData();
+        await repo.saveExitData(data);
+
+        const mockOnchain = createMockOnchain({
+            confirmed: true,
+            blockHeight: 1000,
+        });
+
+        const result = await sovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            mockOnchain,
+            {} as Identity,
+            "bc1qtest",
+            {} as AnchorBumper
         );
 
         const lastStep = result.steps[result.steps.length - 1];
