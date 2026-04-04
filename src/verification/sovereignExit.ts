@@ -124,18 +124,29 @@ export async function sovereignExit(
         // Finalize the PSBT and broadcast
         try {
             const tx = Transaction.fromPSBT(base64.decode(psbt));
-            const input = tx.getInput(0);
+            let sawTapKeySig = false;
+            let sawTapScriptSig = false;
 
-            if (input.tapKeySig) {
-                // Tree tx: finalize with key-path witness
-                tx.updateInput(0, {
-                    finalScriptWitness: [input.tapKeySig],
-                });
-            } else if (input.tapScriptSig && input.tapScriptSig.length > 0) {
-                // Tapscript spend: finalize assembles witness from tapScriptSig + tapLeafScript
-                tx.finalize();
-            } else {
-                // Already finalized or no signatures — try as-is
+            for (
+                let inputIndex = 0;
+                inputIndex < tx.inputsLength;
+                inputIndex++
+            ) {
+                const input = tx.getInput(inputIndex);
+                if (input.tapKeySig) {
+                    tx.updateInput(inputIndex, {
+                        finalScriptWitness: [input.tapKeySig],
+                    });
+                    sawTapKeySig = true;
+                }
+
+                if (input.tapScriptSig && input.tapScriptSig.length > 0) {
+                    sawTapScriptSig = true;
+                }
+            }
+
+            if (sawTapScriptSig || !sawTapKeySig) {
+                // Finalize remaining script-path or as-yet-unfinalized inputs.
                 tx.finalize();
             }
 

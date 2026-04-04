@@ -49,6 +49,12 @@ describe("buildVtxoDAG", () => {
                 spends: ["cc".repeat(32)],
             },
             {
+                txid: "aa".repeat(32),
+                type: "INDEXER_CHAINED_TX_TYPE_ARK",
+                expiresAt: "",
+                spends: ["bb".repeat(32)],
+            },
+            {
                 txid: "cp".repeat(32),
                 type: "INDEXER_CHAINED_TX_TYPE_CHECKPOINT",
                 expiresAt: "2026-12-31T00:00:00Z",
@@ -67,6 +73,8 @@ describe("buildVtxoDAG", () => {
         const edgeWithCheckpoint = dag.edges.find((e) => e.checkpoint);
         expect(edgeWithCheckpoint).toBeDefined();
         expect(edgeWithCheckpoint!.checkpoint!.txid).toBe("cp".repeat(32));
+        expect(edgeWithCheckpoint!.from).toBe("bb".repeat(32));
+        expect(edgeWithCheckpoint!.to).toBe("aa".repeat(32));
     });
 
     it("should handle multiple commitment txs", async () => {

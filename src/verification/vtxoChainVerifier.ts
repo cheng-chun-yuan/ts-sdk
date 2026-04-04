@@ -135,7 +135,7 @@ function validatePathTx(
             outputIndex++
         ) {
             const output = tx.getOutput(outputIndex);
-            if (output?.amount) outputSum += output.amount;
+            if (output?.amount !== undefined) outputSum += output.amount;
         }
         if (outputSum > totalInputAmount) {
             pushError(

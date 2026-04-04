@@ -73,7 +73,7 @@ export function verifyTaprootScriptTree(
     // Verify leaf script is parseable and leaf hash is computable
     try {
         const rawScript = scriptFromTapLeafScript(leaf);
-        const computedLeafHash = tapLeafHash(rawScript);
+        const computedLeafHash = tapLeafHash(rawScript, controlBlock.version);
 
         // Verify tapScriptSig references match the computed leaf hash
         if (input.tapScriptSig && input.tapScriptSig.length > 0) {

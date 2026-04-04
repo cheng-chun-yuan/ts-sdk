@@ -442,6 +442,35 @@ describe("sovereignExit", () => {
         ).toBe(true);
     });
 
+    it("should finalize tapKeySig inputs even when they are not input 0", async () => {
+        const repo = new InMemoryExitDataRepository();
+        const data = makeExitData();
+        data.virtualTxs = {
+            ["bb".repeat(32)]: await validMultiInputPsbtBase64("bb".repeat(32)),
+        };
+        await repo.saveExitData(data);
+
+        const mockOnchain = createMockOnchain({
+            confirmed: true,
+            blockHeight: 1000,
+        });
+        (mockOnchain.getTxStatus as any).mockImplementation(async () => {
+            throw new Error("not found");
+        });
+
+        const result = await sovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            mockOnchain
+        );
+
+        expect(result.errors.some((e) => /failed to broadcast/i.test(e))).toBe(
+            false
+        );
+        expect(mockOnchain.broadcastTransaction).toHaveBeenCalledTimes(1);
+        expect(result.steps.some((s) => s.type === "broadcast")).toBe(true);
+    });
+
     it("should not contact the ASP during exit", async () => {
         const repo = new InMemoryExitDataRepository();
         const data = makeExitData();
@@ -538,6 +567,43 @@ async function validPsbtBase64(seedHex: string): Promise<string> {
         index: 0,
         witnessUtxo: {
             script: taprootOutputScript(inputKey),
+            amount: 10_000n,
+        },
+        tapKeySig: new Uint8Array(64).fill(0x22),
+    });
+
+    return base64.encode(tx.toPSBT());
+}
+
+async function validMultiInputPsbtBase64(seedHex: string): Promise<string> {
+    const tx = new ArkTransaction();
+    const inputKey1 = await SingleKey.fromPrivateKey(
+        randomPrivateKeyBytes()
+    ).xOnlyPublicKey();
+    const inputKey2 = await SingleKey.fromPrivateKey(
+        randomPrivateKeyBytes()
+    ).xOnlyPublicKey();
+    const outputKey = await SingleKey.fromPrivateKey(
+        randomPrivateKeyBytes()
+    ).xOnlyPublicKey();
+
+    tx.addOutput({
+        script: taprootOutputScript(outputKey),
+        amount: 10_000n,
+    });
+    tx.addInput({
+        txid: new Uint8Array(32).fill(0x11),
+        index: 0,
+        witnessUtxo: {
+            script: taprootOutputScript(inputKey1),
+            amount: 0n,
+        },
+    });
+    tx.addInput({
+        txid: hex.decode(seedHex),
+        index: 0,
+        witnessUtxo: {
+            script: taprootOutputScript(inputKey2),
             amount: 10_000n,
         },
         tapKeySig: new Uint8Array(64).fill(0x22),

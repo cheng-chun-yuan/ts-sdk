@@ -101,7 +101,7 @@ export async function buildVtxoDAG(
             };
 
             // Attach checkpoint if one sits on this edge
-            const checkpoint = checkpointsBySpend.get(entry.txid);
+            const checkpoint = checkpointsBySpend.get(parentTxid);
             if (checkpoint) {
                 edge.checkpoint = checkpoint;
             }
