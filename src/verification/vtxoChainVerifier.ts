@@ -19,6 +19,7 @@ import {
     verifyCosignerKeys,
     verifyInternalKeysUnspendable,
 } from "./signatureVerifier";
+import { verifyScriptSatisfaction } from "./scriptVerifier";
 import { Transaction } from "../utils/transaction";
 
 function errorMessage(err: unknown): string {
@@ -469,6 +470,64 @@ export async function verifyVtxo(
         dagOk = false;
     }
     partial.dagStructure = dagOk;
+
+    // Step 3e: Verify tapscript satisfaction (CSV/CLTV/hash conditions)
+    if (!isPreconfirmed) {
+        try {
+            const chainTip = await onchain.getChainTip();
+            for (const [txid, tx] of pathTxs) {
+                for (
+                    let inputIndex = 0;
+                    inputIndex < tx.inputsLength;
+                    inputIndex++
+                ) {
+                    const input = tx.getInput(inputIndex);
+                    if (
+                        !input.tapLeafScript ||
+                        input.tapLeafScript.length === 0
+                    ) {
+                        continue;
+                    }
+
+                    let parentConfirmation:
+                        | { blockHeight: number; blockTime: number }
+                        | undefined;
+
+                    if (input.txid) {
+                        const parentTxid = hex.encode(input.txid);
+                        if (commitmentTxidSet.has(parentTxid)) {
+                            try {
+                                const status =
+                                    await onchain.getTxStatus(parentTxid);
+                                if (status.confirmed) {
+                                    parentConfirmation = {
+                                        blockHeight: status.blockHeight,
+                                        blockTime: status.blockTime,
+                                    };
+                                }
+                            } catch {
+                                // Structural checks still run without confirmation metadata.
+                            }
+                        }
+                    }
+
+                    const scriptResult = verifyScriptSatisfaction(
+                        tx,
+                        inputIndex,
+                        chainTip,
+                        parentConfirmation
+                    );
+                    for (const error of scriptResult.errors) {
+                        pushError(
+                            `Script verification failed for tx ${txid} input ${inputIndex}: ${error}`
+                        );
+                    }
+                }
+            }
+        } catch (err) {
+            pushError(`Script verification error: ${errorMessage(err)}`);
+        }
+    }
 
     // Step 4: Verify signatures
     if (shouldVerifySigs) {
