@@ -45,3 +45,30 @@ export {
     verifyBoltzSwapPreimage,
     verifyBoltzSwapSatisfaction,
 } from "./swapVerifier";
+
+export {
+    collectExitData,
+    validateExitData,
+    InMemoryExitDataRepository,
+} from "./exitDataStore";
+export type { ExitData, ExitDataRepository } from "./exitDataStore";
+
+export {
+    StorageAdapterExitDataRepository,
+    FileSystemExitDataRepository,
+    IndexedDBExitDataRepository,
+    AsyncStorageExitDataRepository,
+} from "./exitDataRepository";
+
+export {
+    buildExitDataForVtxo,
+    buildExitDataForVtxos,
+    syncExitData,
+} from "./exitDataSync";
+
+export { sovereignExit, canSovereignExit } from "./sovereignExit";
+export type {
+    SovereignExitStep,
+    SovereignExitResult,
+    SovereignExitOptions,
+} from "./sovereignExit";

@@ -224,10 +224,23 @@ export {
     verifyScriptSatisfaction,
     verifyBoltzSwapPreimage,
     verifyBoltzSwapSatisfaction,
+    collectExitData,
+    validateExitData,
+    InMemoryExitDataRepository,
+    StorageAdapterExitDataRepository,
+    FileSystemExitDataRepository,
+    IndexedDBExitDataRepository,
+    AsyncStorageExitDataRepository,
+    buildExitDataForVtxo,
+    buildExitDataForVtxos,
+    syncExitData,
+    sovereignExit,
+    canSovereignExit,
 } from "./verification";
 export type {
     VtxoVerificationResult,
     VtxoVerificationOptions,
+    PartialChecks,
     AnchorVerification,
     CheckpointVerificationResult,
     CheckpointTimelockResult,
@@ -237,6 +250,11 @@ export type {
     ScriptVerificationResult,
     ChainTip,
     ParentConfirmation,
+    ExitData,
+    ExitDataRepository,
+    SovereignExitStep,
+    SovereignExitResult,
+    SovereignExitOptions,
 } from "./verification";
 
 // Contracts
