@@ -1,8 +1,11 @@
-import { errorMessage } from "./utils";
 import { hex } from "@scure/base";
 import { Transaction } from "@scure/btc-signer";
 import { compareBytes } from "@scure/btc-signer/utils.js";
 import type { OnchainProvider } from "../providers/onchain";
+
+function errorMessage(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+}
 
 export interface AnchorVerification {
     commitmentTxid: string;
@@ -22,7 +25,8 @@ export async function verifyOnchainAnchor(
     expectedAmount: bigint,
     expectedScript: Uint8Array,
     onchain: OnchainProvider,
-    minDepth: number = 6
+    minDepth: number = 6,
+    expectedSpenderTxid?: string
 ): Promise<AnchorVerification> {
     const errors: string[] = [];
     const warnings: string[] = [];
@@ -101,11 +105,10 @@ export async function verifyOnchainAnchor(
         errors.push(`Failed to fetch commitment tx hex: ${errorMessage(err)}`);
     }
 
-    // Check if the batch output has been spent. In normal Ark operation,
-    // the batch output IS spent by the tree root tx — this is expected.
-    // We report it as informational (warning), not an error, since we
-    // cannot distinguish expected tree spending from adversarial spending
-    // without the tree root txid (which is not available at this layer).
+    // Check if the batch output has been spent and by whom.
+    // If expectedSpenderTxid is provided, verify the spender matches;
+    // a mismatch means the commitment output was double-spent by an
+    // adversarial or unexpected transaction.
     let doubleSpent = false;
     try {
         const outspends = await onchain.getTxOutspends(commitmentTxid);
@@ -113,10 +116,21 @@ export async function verifyOnchainAnchor(
             outspends.length > expectedOutputIndex &&
             outspends[expectedOutputIndex].spent
         ) {
-            doubleSpent = true;
-            warnings.push(
-                `Commitment tx output ${expectedOutputIndex} has been spent by ${outspends[expectedOutputIndex].txid}`
-            );
+            const actualSpender = outspends[expectedOutputIndex].txid;
+            if (expectedSpenderTxid) {
+                if (actualSpender !== expectedSpenderTxid) {
+                    doubleSpent = true;
+                    errors.push(
+                        `Commitment output ${expectedOutputIndex} spent by unexpected tx ${actualSpender}, expected ${expectedSpenderTxid}`
+                    );
+                }
+                // If matches, the spend is expected — no warning needed
+            } else {
+                doubleSpent = true;
+                warnings.push(
+                    `Commitment tx output ${expectedOutputIndex} has been spent by ${actualSpender}`
+                );
+            }
         }
     } catch (err) {
         warnings.push(

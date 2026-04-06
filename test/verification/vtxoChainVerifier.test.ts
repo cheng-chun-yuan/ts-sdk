@@ -67,31 +67,66 @@ describe("verifyVtxo", () => {
         mockOnchain = createMockOnchain();
     });
 
-    describe("preconfirmed VTXO rejection", () => {
-        it("should reject preconfirmed VTXOs immediately", async () => {
+    describe("preconfirmed VTXO partial verification", () => {
+        it("should mark preconfirmed VTXOs as invalid but run partial checks", async () => {
+            const { tx: commitmentTx } = await buildCommitmentTx(10_000n);
+            const csvTx = await buildCsvPathTx({
+                parentTxid: commitmentTx.id,
+                amount: 10_000n,
+                sequence: 144,
+            });
             const vtxo: VirtualCoin = {
-                txid: "aa".repeat(32),
+                txid: csvTx.id,
                 vout: 0,
-                value: 1000n,
+                value: 10_000n,
                 virtualStatus: {
                     state: "preconfirmed",
                     batchTxid: "",
-                    commitmentTxIds: [],
+                    commitmentTxIds: [commitmentTx.id],
                 },
             } as VirtualCoin;
+
+            (
+                mockIndexer.getVtxoChain as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                chain: [
+                    {
+                        txid: commitmentTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+                        expiresAt: "",
+                        spends: [],
+                    },
+                    {
+                        txid: csvTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_TREE",
+                        expiresAt: "",
+                        spends: [commitmentTx.id],
+                    },
+                ],
+            });
+            (
+                mockIndexer.getVirtualTxs as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                txs: [base64.encode(csvTx.toPSBT())],
+            });
 
             const result = await verifyVtxo(
                 vtxo,
                 mockIndexer,
                 mockOnchain,
-                serverInfo
+                serverInfo,
+                { verifySignatures: false }
             );
 
             expect(result.valid).toBe(false);
             expect(result.errors.some((e) => /preconfirmed/i.test(e))).toBe(
                 true
             );
-            expect(mockIndexer.getVtxoChain).not.toHaveBeenCalled();
+            expect(result.partialChecks).toBeDefined();
+            expect(result.partialChecks?.dagStructure).toBe(true);
+            expect(result.partialChecks?.internalKeysUnspendable).toBe(true);
+            // Onchain anchoring should NOT have been called
+            expect(mockOnchain.getTxHex).not.toHaveBeenCalled();
         });
     });
 
@@ -2088,7 +2123,7 @@ describe("verifyVtxo adversarial inputs", () => {
         expect(result.errors.some((e) => /mismatch|count/i.test(e))).toBe(true);
     });
 
-    it("should reject preconfirmed VTXO without calling indexer", async () => {
+    it("should reject preconfirmed VTXO as invalid but skip onchain checks", async () => {
         const vtxo = {
             txid: "aa".repeat(32),
             vout: 0,
@@ -2100,6 +2135,10 @@ describe("verifyVtxo adversarial inputs", () => {
             },
         } as VirtualCoin;
 
+        (
+            mockIndexer.getVtxoChain as ReturnType<typeof vi.fn>
+        ).mockResolvedValue({ chain: [] });
+
         const result = await verifyVtxo(
             vtxo,
             mockIndexer,
@@ -2108,8 +2147,6 @@ describe("verifyVtxo adversarial inputs", () => {
         );
 
         expect(result.valid).toBe(false);
-        expect(result.errors.some((e) => /preconfirmed/i.test(e))).toBe(true);
-        expect(mockIndexer.getVtxoChain).not.toHaveBeenCalled();
         expect(mockOnchain.getTxHex).not.toHaveBeenCalled();
     });
 

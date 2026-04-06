@@ -290,6 +290,50 @@ describe("verifyOnchainAnchor", () => {
             );
         });
 
+        it("should not warn when spender matches expectedSpenderTxid", async () => {
+            (
+                mockOnchain.getTxOutspends as ReturnType<typeof vi.fn>
+            ).mockResolvedValue([{ spent: true, txid: "expected-child-txid" }]);
+
+            const result = await verifyOnchainAnchor(
+                commitmentTxid,
+                expectedOutputIndex,
+                expectedAmount,
+                expectedScript,
+                mockOnchain,
+                6,
+                "expected-child-txid"
+            );
+
+            expect(result.doubleSpent).toBe(false);
+            expect(result.errors).toHaveLength(0);
+            expect(result.warnings.some((w) => /spent/i.test(w))).toBe(false);
+        });
+
+        it("should error when spender does not match expectedSpenderTxid", async () => {
+            (
+                mockOnchain.getTxOutspends as ReturnType<typeof vi.fn>
+            ).mockResolvedValue([{ spent: true, txid: "adversarial-txid" }]);
+
+            const result = await verifyOnchainAnchor(
+                commitmentTxid,
+                expectedOutputIndex,
+                expectedAmount,
+                expectedScript,
+                mockOnchain,
+                6,
+                "expected-child-txid"
+            );
+
+            expect(result.doubleSpent).toBe(true);
+            expect(result.errors.some((e) => /unexpected tx/i.test(e))).toBe(
+                true
+            );
+            expect(result.errors.some((e) => /adversarial-txid/i.test(e))).toBe(
+                true
+            );
+        });
+
         it("should handle outspend index beyond array length", async () => {
             (
                 mockOnchain.getTxOutspends as ReturnType<typeof vi.fn>

@@ -1,4 +1,3 @@
-import { errorMessage } from "./utils";
 import { hex } from "@scure/base";
 import { TAPROOT_UNSPENDABLE_KEY } from "@scure/btc-signer";
 import { compareBytes } from "@scure/btc-signer/utils.js";
@@ -8,6 +7,10 @@ import { CosignerPublicKey, getArkPsbtFields } from "../utils/unknownFields";
 import { verifyTapscriptSignatures } from "../utils/arkTransaction";
 import { decodeTapscript } from "../script/tapscript";
 import { scriptFromTapLeafScript } from "../script/base";
+
+function errorMessage(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+}
 
 export interface SignatureVerificationResult {
     txid: string;

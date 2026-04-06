@@ -211,11 +211,9 @@ export * as asset from "./extension/asset";
 export {
     verifyVtxo,
     verifyAllVtxos,
-    buildVtxoDAG,
-    renderDAGAscii,
     verifyOnchainAnchor,
     verifyCheckpointTransactions,
-    verifyCheckpointTimelocks,
+    verifyCheckpointExpiry,
     verifyTreeSignatures,
     verifyCosignerKeys,
     verifyInternalKeysUnspendable,
@@ -229,9 +227,6 @@ export type {
     SignatureVerificationResult,
     CosignerKeyVerificationResult,
     InternalKeyVerificationResult,
-    DAGNode,
-    DAGEdge,
-    VtxoDAG,
 } from "./verification";
 
 // Contracts

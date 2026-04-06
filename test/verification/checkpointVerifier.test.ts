@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
     verifyCheckpointTransactions,
-    verifyCheckpointTimelocks,
+    verifyCheckpointExpiry,
 } from "../../src/verification/checkpointVerifier";
 import { ChainTxType, type ChainTx } from "../../src/providers/indexer";
 import type { RelativeTimelock } from "../../src/script/tapscript";
@@ -103,9 +103,9 @@ describe("verifyCheckpointTransactions", () => {
     });
 });
 
-describe("verifyCheckpointTimelocks", () => {
+describe("verifyCheckpointExpiry", () => {
     it("warns when checkpoint expiry metadata is missing", () => {
-        const result = verifyCheckpointTimelocks(
+        const result = verifyCheckpointExpiry(
             {
                 txid: "cp".repeat(32),
                 type: ChainTxType.CHECKPOINT,
@@ -124,7 +124,7 @@ describe("verifyCheckpointTimelocks", () => {
     });
 
     it("warns when checkpoint expiry is already past", () => {
-        const result = verifyCheckpointTimelocks(
+        const result = verifyCheckpointExpiry(
             {
                 txid: "cp".repeat(32),
                 type: ChainTxType.CHECKPOINT,
@@ -141,7 +141,7 @@ describe("verifyCheckpointTimelocks", () => {
     });
 
     it("rejects invalid expiry timestamps", () => {
-        const result = verifyCheckpointTimelocks(
+        const result = verifyCheckpointExpiry(
             {
                 txid: "cp".repeat(32),
                 type: ChainTxType.CHECKPOINT,

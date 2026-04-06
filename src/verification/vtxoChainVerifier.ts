@@ -20,7 +20,17 @@ import {
     verifyInternalKeysUnspendable,
 } from "./signatureVerifier";
 import { Transaction } from "../utils/transaction";
-import { errorMessage } from "./utils";
+
+function errorMessage(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+}
+
+export interface PartialChecks {
+    signaturesValid?: boolean;
+    internalKeysUnspendable?: boolean;
+    amountConservation?: boolean;
+    dagStructure?: boolean;
+}
 
 export interface VtxoVerificationResult {
     valid: boolean;
@@ -33,6 +43,8 @@ export interface VtxoVerificationResult {
     chainLength: number;
     errors: string[];
     warnings: string[];
+    /** For preconfirmed VTXOs: which checks passed without onchain anchoring */
+    partialChecks?: PartialChecks;
 }
 
 export interface VtxoVerificationOptions {
@@ -241,16 +253,7 @@ export async function verifyVtxo(
             errors.push(`... truncated (>${MAX_ERRORS} errors)`);
     };
 
-    if (vtxo.virtualStatus?.state === "preconfirmed") {
-        return makeResult(
-            outpoint,
-            [],
-            0,
-            0,
-            ["VTXO is preconfirmed and has no commitment transaction yet"],
-            warnings
-        );
-    }
+    const isPreconfirmed = vtxo.virtualStatus?.state === "preconfirmed";
 
     // Step 1: Get the DAG from the VTXO (root) back to commitment txs (leaves)
     let vtxoChain: Awaited<ReturnType<IndexerProvider["getVtxoChain"]>> | null =
@@ -367,65 +370,69 @@ export async function verifyVtxo(
         return makeResult(outpoint, allCommitmentTxids, 0, 0, errors, warnings);
     }
 
-    // Step 3: Validate structure + cosigner keys
-    // Fetch and cache ALL commitment txs for anchor verification
+    // Track partial check results (used for preconfirmed VTXOs)
+    const partial: PartialChecks = {};
+
+    // Step 3: Validate structure + cosigner keys (requires onchain data)
     const cachedCommitmentTxs = new Map<string, Transaction>();
-    try {
-        const sweepScript = CSVMultisigTapscript.encode({
-            timelock: serverInfo.sweepInterval,
-            pubkeys: [serverInfo.pubkey],
-        }).script;
-        const sweepTapTreeRoot = tapLeafHash(sweepScript);
+    if (!isPreconfirmed) {
+        try {
+            const sweepScript = CSVMultisigTapscript.encode({
+                timelock: serverInfo.sweepInterval,
+                pubkeys: [serverInfo.pubkey],
+            }).script;
+            const sweepTapTreeRoot = tapLeafHash(sweepScript);
 
-        // Determine the primary commitment tx from tree root's actual input
-        const rootCommitmentInput = findRootCommitmentInput(
-            tree.root,
-            allCommitmentTxids
-        );
-        const primaryCommitTxid =
-            rootCommitmentInput?.txid ?? allCommitmentTxids[0];
+            const rootCommitmentInput = findRootCommitmentInput(
+                tree.root,
+                allCommitmentTxids
+            );
+            const primaryCommitTxid =
+                rootCommitmentInput?.txid ?? allCommitmentTxids[0];
 
-        // Fetch the primary commitment tx for validateVtxoTxGraph
-        const primaryTxHex = await onchain.getTxHex(primaryCommitTxid);
-        const primaryTx = Transaction.fromRaw(hex.decode(primaryTxHex));
-        cachedCommitmentTxs.set(primaryCommitTxid, primaryTx);
+            const primaryTxHex = await onchain.getTxHex(primaryCommitTxid);
+            const primaryTx = Transaction.fromRaw(hex.decode(primaryTxHex));
+            cachedCommitmentTxs.set(primaryCommitTxid, primaryTx);
 
-        validateVtxoTxGraph(tree, primaryTx, sweepTapTreeRoot);
+            validateVtxoTxGraph(tree, primaryTx, sweepTapTreeRoot);
 
-        collectErrors(
-            verifyCosignerKeys(tree, sweepTapTreeRoot),
-            (r) =>
-                `Cosigner key verification failed for tx ${r.txid} child ${r.childIndex}: ${r.error}`
-        ).forEach(pushError);
+            collectErrors(
+                verifyCosignerKeys(tree, sweepTapTreeRoot),
+                (r) =>
+                    `Cosigner key verification failed for tx ${r.txid} child ${r.childIndex}: ${r.error}`
+            ).forEach(pushError);
 
-        // Fetch remaining commitment txs (if multiple batches)
-        for (const commitTxid of allCommitmentTxids) {
-            if (cachedCommitmentTxs.has(commitTxid)) continue;
-            try {
-                const txHex = await onchain.getTxHex(commitTxid);
-                cachedCommitmentTxs.set(
-                    commitTxid,
-                    Transaction.fromRaw(hex.decode(txHex))
-                );
-            } catch (err) {
-                pushError(
-                    `Failed to fetch commitment tx ${commitTxid}: ${errorMessage(err)}`
-                );
+            for (const commitTxid of allCommitmentTxids) {
+                if (cachedCommitmentTxs.has(commitTxid)) continue;
+                try {
+                    const txHex = await onchain.getTxHex(commitTxid);
+                    cachedCommitmentTxs.set(
+                        commitTxid,
+                        Transaction.fromRaw(hex.decode(txHex))
+                    );
+                } catch (err) {
+                    pushError(
+                        `Failed to fetch commitment tx ${commitTxid}: ${errorMessage(err)}`
+                    );
+                }
             }
+        } catch (err) {
+            pushError(`Tree structure validation failed: ${errorMessage(err)}`);
         }
-    } catch (err) {
-        pushError(`Tree structure validation failed: ${errorMessage(err)}`);
     }
 
     // Step 3b: Verify internal keys use unspendable NUMS point
     try {
-        collectErrors(
+        const numsErrors = collectErrors(
             verifyInternalKeysUnspendable(tree),
             (r) =>
                 `Unspendable key check failed for tx ${r.txid} input ${r.inputIndex}: ${r.error}`
-        ).forEach(pushError);
+        );
+        numsErrors.forEach(pushError);
+        partial.internalKeysUnspendable = numsErrors.length === 0;
     } catch (err) {
         pushError(`Internal key verification error: ${errorMessage(err)}`);
+        partial.internalKeysUnspendable = false;
     }
 
     // Step 3c: Verify checkpoint transactions in the chain
@@ -445,38 +452,61 @@ export async function verifyVtxo(
     }
 
     // Step 3d: Verify VTXO exists in the DAG
+    let dagOk = true;
     try {
         const leafTx = tree.find(vtxo.txid);
         if (!leafTx) {
             pushError(`VTXO ${vtxo.txid}:${vtxo.vout} not found in DAG`);
+            dagOk = false;
         } else if (leafTx.root.outputsLength <= vtxo.vout) {
             pushError(
                 `VTXO output index ${vtxo.vout} out of bounds in tx ${vtxo.txid}`
             );
+            dagOk = false;
         }
     } catch (err) {
         pushError(`VTXO lookup error: ${errorMessage(err)}`);
+        dagOk = false;
     }
+    partial.dagStructure = dagOk;
 
     // Step 4: Verify signatures
     if (shouldVerifySigs) {
         try {
-            collectErrors(
+            const sigErrors = collectErrors(
                 verifyTreeSignatures(tree),
                 (r) =>
                     `Signature verification failed for tx ${r.txid} input ${r.inputIndex}: ${r.error}`
-            ).forEach(pushError);
+            );
+            sigErrors.forEach(pushError);
+            partial.signaturesValid = sigErrors.length === 0;
         } catch (err) {
             pushError(`Signature verification error: ${errorMessage(err)}`);
+            partial.signaturesValid = false;
         }
     }
 
+    // For preconfirmed VTXOs: return early with partial checks, valid = false
+    if (isPreconfirmed) {
+        warnings.push(
+            "VTXO is preconfirmed — onchain anchoring skipped, partial checks only"
+        );
+        const result = makeResult(
+            outpoint,
+            allCommitmentTxids,
+            0,
+            chainLength,
+            ["VTXO is preconfirmed and has no commitment transaction yet"],
+            warnings
+        );
+        result.partialChecks = partial;
+        return result;
+    }
+
     // Step 5: Verify onchain anchoring for ALL commitment txs
-    // Build a map from commitment txid to the output index actually spent by
-    // the child virtual tx that references it. This handles multi-batch VTXOs
-    // where different commitment txs may be spent at different output indices.
     const commitOutputIndexMap = new Map<string, number>();
-    for (const [, tx] of pathTxs) {
+    const commitSpenderMap = new Map<string, string>();
+    for (const [childTxid, tx] of pathTxs) {
         for (let idx = 0; idx < tx.inputsLength; idx++) {
             const input = tx.getInput(idx);
             if (!input.txid) continue;
@@ -486,6 +516,7 @@ export async function verifyVtxo(
                     parentTxid,
                     input.index ?? BATCH_OUTPUT_INDEX
                 );
+                commitSpenderMap.set(parentTxid, childTxid);
             }
         }
     }
@@ -493,11 +524,9 @@ export async function verifyVtxo(
     let minConfirmationDepth = Infinity;
     for (const commitTxid of allCommitmentTxids) {
         try {
-            // Use the output index from the child tx that actually spends this commitment
             const outputIndex =
                 commitOutputIndexMap.get(commitTxid) ?? BATCH_OUTPUT_INDEX;
 
-            // Derive witnessUtxo from cached commitment tx
             let witnessAmount: bigint | undefined;
             let witnessScript: Uint8Array | undefined;
 
@@ -523,7 +552,8 @@ export async function verifyVtxo(
                 witnessAmount,
                 witnessScript,
                 onchain,
-                minDepth
+                minDepth,
+                commitSpenderMap.get(commitTxid)
             );
 
             if (anchorResult.confirmationDepth < minConfirmationDepth) {

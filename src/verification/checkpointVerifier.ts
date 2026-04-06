@@ -54,7 +54,7 @@ export function verifyCheckpointTransactions(
             );
         }
 
-        const timelock = verifyCheckpointTimelocks(
+        const timelock = verifyCheckpointExpiry(
             checkpoint,
             sweepInterval,
             nowMs
@@ -71,7 +71,7 @@ export function verifyCheckpointTransactions(
     });
 }
 
-export function verifyCheckpointTimelocks(
+export function verifyCheckpointExpiry(
     checkpoint: ChainTx,
     sweepInterval: RelativeTimelock,
     nowMs: number = Date.now()

@@ -2,6 +2,7 @@ export { verifyVtxo, verifyAllVtxos } from "./vtxoChainVerifier";
 export type {
     VtxoVerificationResult,
     VtxoVerificationOptions,
+    PartialChecks,
 } from "./vtxoChainVerifier";
 
 export {
@@ -20,12 +21,9 @@ export type { AnchorVerification } from "./onchainAnchorVerifier";
 
 export {
     verifyCheckpointTransactions,
-    verifyCheckpointTimelocks,
+    verifyCheckpointExpiry,
 } from "./checkpointVerifier";
 export type {
     CheckpointVerificationResult,
     CheckpointTimelockResult,
 } from "./checkpointVerifier";
-
-export { buildVtxoDAG, renderDAGAscii } from "./dagVisualizer";
-export type { DAGNode, DAGEdge, VtxoDAG } from "./dagVisualizer";
