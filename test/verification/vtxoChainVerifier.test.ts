@@ -1418,6 +1418,84 @@ describe("verifyVtxo", () => {
     });
 
     describe("checkpoint handling", () => {
+        it("should surface checkpoint integration errors through verifyVtxo", async () => {
+            const { tx: commitmentTx, rawHex: commitmentHex } =
+                await buildCommitmentTx(10_000n);
+            const pathTx = await buildCsvPathTx({
+                parentTxid: commitmentTx.id,
+                amount: 10_000n,
+                sequence: 144,
+            });
+            const vtxo = makeVtxo(pathTx.id, [commitmentTx.id]);
+
+            (
+                mockIndexer.getVtxoChain as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                chain: [
+                    {
+                        txid: commitmentTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+                        expiresAt: "",
+                        spends: [],
+                    },
+                    {
+                        txid: pathTx.id,
+                        type: "INDEXER_CHAINED_TX_TYPE_TREE",
+                        expiresAt: "",
+                        spends: [commitmentTx.id],
+                    },
+                    {
+                        txid: "cp".repeat(32),
+                        type: "INDEXER_CHAINED_TX_TYPE_CHECKPOINT",
+                        expiresAt: "2099-01-01T00:00:00Z",
+                        spends: [commitmentTx.id],
+                    },
+                ],
+            });
+            (
+                mockIndexer.getVirtualTxs as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                txs: [base64.encode(pathTx.toPSBT())],
+            });
+            (
+                mockOnchain.getTxHex as ReturnType<typeof vi.fn>
+            ).mockResolvedValue(commitmentHex);
+            (
+                mockOnchain.getTxStatus as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                confirmed: true,
+                blockHeight: 900,
+                blockTime: 1_700_000_000,
+            });
+            (
+                mockOnchain.getChainTip as ReturnType<typeof vi.fn>
+            ).mockResolvedValue({
+                height: 1100,
+                time: 1_700_000_100,
+                hash: "00".repeat(32),
+            });
+            (
+                mockOnchain.getTxOutspends as ReturnType<typeof vi.fn>
+            ).mockResolvedValue([{ spent: false, txid: "" }]);
+
+            const result = await verifyVtxo(
+                vtxo,
+                mockIndexer,
+                mockOnchain,
+                serverInfo,
+                { verifySignatures: false }
+            );
+
+            expect(result.valid).toBe(false);
+            expect(
+                result.errors.some((error) =>
+                    /checkpoint verification failed.*not integrated into the dag/i.test(
+                        error
+                    )
+                )
+            ).toBe(true);
+        });
+
         it("should warn on expired checkpoint transactions in chain", async () => {
             const commitmentTxid = "aa".repeat(32);
             const vtxo = makeVtxo("cc".repeat(32), [commitmentTxid]);

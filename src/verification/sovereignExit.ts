@@ -1,11 +1,25 @@
 import { hex, base64 } from "@scure/base";
+import { Address, SigHash } from "@scure/btc-signer";
 import type { Outpoint } from "../wallet";
 import type { OnchainProvider } from "../providers/onchain";
 import { ChainTxType } from "../providers/indexer";
-import type { ExitDataRepository } from "./exitDataStore";
+import type { ExitClaimInput, ExitDataRepository } from "./exitDataStore";
 import { validateExitData } from "./exitDataStore";
 import { Transaction } from "../utils/transaction";
 import { errorMessage } from "./utils";
+import type { Identity } from "../identity";
+import type { Network } from "../networks";
+import { VtxoScript } from "../script/base";
+import {
+    CSVMultisigTapscript,
+    ConditionCSVMultisigTapscript,
+} from "../script/tapscript";
+
+export interface SovereignExitOptions {
+    identity?: Identity;
+    outputAddress?: string;
+    network?: Network;
+}
 
 export interface SovereignExitStep {
     type: "broadcast" | "wait" | "done";
@@ -61,17 +75,11 @@ export async function canSovereignExit(
     return { canExit: true };
 }
 
-/**
- * Broadcasts pre-signed virtual transactions for a sovereign exit.
- *
- * NOTE: This does NOT yet construct the final sweep transaction to claim
- * funds to the user's address, nor does it perform CPFP anchor bumping.
- * Those steps will be added in a future release.
- */
 export async function sovereignExit(
     vtxoOutpoint: Outpoint,
     exitDataRepo: ExitDataRepository,
-    onchain: OnchainProvider
+    onchain: OnchainProvider,
+    options?: SovereignExitOptions
 ): Promise<SovereignExitResult> {
     const steps: SovereignExitStep[] = [];
     const errors: string[] = [];
@@ -178,25 +186,168 @@ export async function sovereignExit(
         }
     }
 
-    const lastBroadcastTxid =
-        [...steps].reverse().find((s) => s.type === "broadcast")?.txid ??
-        vtxoOutpoint.txid;
+    let finalTxid = chainTxIds[0] ?? vtxoOutpoint.txid;
+
+    if (options?.identity || options?.outputAddress || options?.network) {
+        if (!options.identity || !options.outputAddress || !options.network) {
+            errors.push(
+                "Final claim requires identity, outputAddress, and network"
+            );
+        } else if (!data.claimInput) {
+            errors.push(
+                "Stored exit data does not include claim input details for the final claim"
+            );
+        } else {
+            const claim = await buildFinalClaimTransaction(
+                data.claimInput,
+                options.outputAddress,
+                options.network,
+                options.identity,
+                onchain
+            );
+
+            if (claim.waitStep) {
+                steps.push(claim.waitStep);
+                errors.push(claim.waitStep.description);
+            } else if (claim.tx) {
+                try {
+                    await onchain.broadcastTransaction(claim.tx.hex);
+                    finalTxid = claim.tx.id;
+                    steps.push({
+                        type: "broadcast",
+                        txid: claim.tx.id,
+                        description: `Broadcast final claim tx: ${claim.tx.id}`,
+                    });
+                } catch (err) {
+                    const errMsg = errorMessage(err);
+                    if (/already|mempool|duplicate/i.test(errMsg)) {
+                        finalTxid = claim.tx.id;
+                        steps.push({
+                            type: "broadcast",
+                            txid: claim.tx.id,
+                            description: `Final claim already in mempool: ${claim.tx.id}`,
+                        });
+                    } else {
+                        errors.push(
+                            `Failed to broadcast final claim tx ${claim.tx.id}: ${errMsg}`
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     steps.push({
         type: "done",
-        txid: lastBroadcastTxid,
-        description:
-            "Virtual transactions broadcast complete (final sweep tx not yet implemented)",
+        txid: finalTxid,
+        description: "Sovereign exit transaction sequence complete",
     });
 
-    if (errors.length === 0) {
-        errors.push("Final sweep transaction is not implemented yet");
-    }
-
     return {
-        success: false,
+        success: errors.length === 0,
         steps,
-        finalTxid: lastBroadcastTxid,
+        finalTxid,
         errors,
     };
+}
+
+async function buildFinalClaimTransaction(
+    claimInput: ExitClaimInput,
+    outputAddress: string,
+    network: Network,
+    identity: Identity,
+    onchain: OnchainProvider
+): Promise<{
+    tx?: Transaction;
+    waitStep?: SovereignExitStep;
+}> {
+    const txStatus = await onchain.getTxStatus(claimInput.txid);
+    if (!txStatus.confirmed) {
+        return {
+            waitStep: {
+                type: "wait",
+                txid: claimInput.txid,
+                description: `Final claim unavailable until ${claimInput.txid} is confirmed`,
+            },
+        };
+    }
+
+    const tapTree = hex.decode(claimInput.tapTree);
+    const vtxoScript = VtxoScript.decode(tapTree);
+    const chainTip = await onchain.getChainTip();
+    const exit = availableExitPath(
+        { height: txStatus.blockHeight, time: txStatus.blockTime },
+        { height: chainTip.height, time: chainTip.time },
+        vtxoScript
+    );
+
+    if (!exit) {
+        return {
+            waitStep: {
+                type: "wait",
+                txid: claimInput.txid,
+                description: `Final claim timelock is not yet spendable for ${claimInput.txid}`,
+            },
+        };
+    }
+
+    const spendingLeaf = vtxoScript.findLeaf(hex.encode(exit.script));
+    const tx = new Transaction({ version: 2 });
+    tx.addInput({
+        txid: hex.decode(claimInput.txid),
+        index: claimInput.vout,
+        tapLeafScript: [spendingLeaf],
+        sequence: 0xffffffff - 1,
+        witnessUtxo: {
+            amount: BigInt(claimInput.value),
+            script: vtxoScript.pkScript,
+        },
+        sighashType: SigHash.DEFAULT,
+    });
+
+    let feeRate = await onchain.getFeeRate();
+    if (!feeRate || feeRate < 1) {
+        feeRate = 1;
+    }
+
+    const fee = BigInt(Math.max(200, Math.ceil(feeRate * 200)));
+    const sendAmount = BigInt(claimInput.value) - fee;
+    if (sendAmount <= 0n) {
+        throw new Error("Final claim amount is not sufficient to cover fees");
+    }
+
+    Address(network).decode(outputAddress);
+    tx.addOutputAddress(outputAddress, sendAmount, network);
+
+    const signedTx = await identity.sign(tx);
+    signedTx.finalize();
+
+    return { tx: signedTx };
+}
+
+function availableExitPath(
+    confirmedAt: { height: number; time: number },
+    current: { height: number; time: number },
+    vtxoScript: VtxoScript
+): CSVMultisigTapscript.Type | ConditionCSVMultisigTapscript.Type | undefined {
+    for (const exit of vtxoScript.exitPaths()) {
+        if (exit.params.timelock.type === "blocks") {
+            if (
+                current.height >=
+                confirmedAt.height + Number(exit.params.timelock.value)
+            ) {
+                return exit;
+            }
+            continue;
+        }
+
+        if (
+            current.time >=
+            confirmedAt.time + Number(exit.params.timelock.value)
+        ) {
+            return exit;
+        }
+    }
+
+    return undefined;
 }

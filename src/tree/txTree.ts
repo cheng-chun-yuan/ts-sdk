@@ -177,7 +177,7 @@ export class TxTree {
             }
 
             const parentOutput = this.root.getOutput(outputIndex);
-            if (parentOutput?.amount === undefined) {
+            if (!parentOutput?.amount) {
                 throw new Error(`parent output ${outputIndex} has no amount`);
             }
 

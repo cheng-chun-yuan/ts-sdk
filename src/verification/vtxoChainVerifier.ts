@@ -13,6 +13,7 @@ import {
 } from "../tree/txTree";
 import { validateVtxoTxGraph } from "../tree/validation";
 import { verifyOnchainAnchor } from "./onchainAnchorVerifier";
+import { verifyCheckpointTransactions } from "./checkpointVerifier";
 import {
     verifyTreeSignatures,
     verifyCosignerKeys,
@@ -430,21 +431,17 @@ export async function verifyVtxo(
 
     // Step 3c: Verify checkpoint transactions in the chain
     if (vtxoChain) {
-        const checkpointEntries = vtxoChain.chain.filter(
-            (c) => c.type === ChainTxType.CHECKPOINT
+        const checkpointResults = verifyCheckpointTransactions(
+            vtxoChain.chain,
+            serverInfo.sweepInterval
         );
-        for (const cp of checkpointEntries) {
-            if (!cp.spends || cp.spends.length === 0) {
-                pushError(`Checkpoint tx ${cp.txid} has no parent references`);
-            }
-            if (cp.expiresAt) {
-                const expiresAt = new Date(cp.expiresAt).getTime();
-                if (expiresAt > 0 && expiresAt < Date.now()) {
-                    warnings.push(
-                        `Checkpoint tx ${cp.txid} has expired at ${cp.expiresAt}`
-                    );
-                }
-            }
+        for (const checkpoint of checkpointResults) {
+            checkpoint.errors.forEach((error) =>
+                pushError(
+                    `Checkpoint verification failed for ${checkpoint.txid}: ${error}`
+                )
+            );
+            warnings.push(...checkpoint.warnings);
         }
     }
 

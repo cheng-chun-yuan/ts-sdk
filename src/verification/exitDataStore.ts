@@ -2,6 +2,14 @@ import type { Outpoint, VirtualCoin } from "../wallet";
 import type { ChainTx } from "../providers/indexer";
 import { ChainTxType } from "../providers/indexer";
 import type { TxTreeNode } from "../tree/txTree";
+import { hex } from "@scure/base";
+
+export interface ExitClaimInput {
+    txid: string;
+    vout: number;
+    value: number;
+    tapTree: string;
+}
 
 /**
  * All data needed to perform a unilateral exit for a single VTXO,
@@ -18,6 +26,8 @@ export interface ExitData {
     virtualTxs: Record<string, string>;
     /** The tree structure (txid + children mapping) for reconstruction */
     treeNodes: TxTreeNode[];
+    /** Optional local claim input data for the final unilateral-exit spend */
+    claimInput?: ExitClaimInput;
     /** Timestamp when this exit data was stored */
     storedAt: number;
 }
@@ -59,6 +69,15 @@ export function collectExitData(
     const commitmentEntry = chain.find(
         (c) => c.type === ChainTxType.COMMITMENT
     );
+    const claimInput =
+        "tapTree" in vtxo && vtxo.tapTree instanceof Uint8Array
+            ? {
+                  txid: vtxo.txid,
+                  vout: vtxo.vout,
+                  value: vtxo.value,
+                  tapTree: hex.encode(vtxo.tapTree),
+              }
+            : undefined;
 
     return {
         vtxoOutpoint: { txid: vtxo.txid, vout: vtxo.vout },
@@ -66,6 +85,7 @@ export function collectExitData(
         chain,
         virtualTxs,
         treeNodes,
+        claimInput,
         storedAt: Date.now(),
     };
 }

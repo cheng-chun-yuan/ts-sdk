@@ -71,7 +71,7 @@ export function validateVtxoTxGraph(
     const batchOutputAmount = roundTransaction.getOutput(
         BATCH_OUTPUT_VTXO_INDEX
     )?.amount;
-    if (batchOutputAmount === undefined) {
+    if (!batchOutputAmount) {
         throw ErrInvalidRoundTxOutputs;
     }
 

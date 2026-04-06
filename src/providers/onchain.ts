@@ -16,7 +16,7 @@ export type ExplorerTransaction = {
     txid: string;
     vout: {
         scriptpubkey_address: string;
-        value: number;
+        value: string;
     }[];
     status: {
         confirmed: boolean;
@@ -333,7 +333,7 @@ export class EsploraProvider implements OnchainProvider {
             throw new Error(`Failed to broadcast package: ${error}`);
         }
 
-        return response.text();
+        return response.json();
     }
 
     private async broadcastTx(tx: string): Promise<string> {
