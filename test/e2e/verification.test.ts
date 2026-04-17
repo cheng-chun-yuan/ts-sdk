@@ -1,12 +1,36 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { hex } from "@scure/base";
-import { RestArkProvider, verifyVtxo } from "../../src";
+import { RestArkProvider, verifyVtxo, type IndexerProvider } from "../../src";
 import {
     beforeEachFaucet,
     createTestArkWallet,
     createVtxo,
     execCommand,
 } from "./utils";
+
+// Wrap a live IndexerProvider so getVtxoChain returns a tampered chain.
+// The rest of the methods pass through to the real server.
+function maliciousIndexer(
+    real: IndexerProvider,
+    mutate: (
+        chain: Awaited<ReturnType<IndexerProvider["getVtxoChain"]>>["chain"]
+    ) => Awaited<ReturnType<IndexerProvider["getVtxoChain"]>>["chain"]
+): IndexerProvider {
+    return new Proxy(real, {
+        get(target, prop, receiver) {
+            if (prop === "getVtxoChain") {
+                return async (
+                    ...args: Parameters<IndexerProvider["getVtxoChain"]>
+                ) => {
+                    const result = await target.getVtxoChain(...args);
+                    return { ...result, chain: mutate(result.chain) };
+                };
+            }
+            const value = Reflect.get(target, prop, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+        },
+    });
+}
 
 // End-to-end regression guard for the Tier 1 client-side VTXO verifier.
 // The unit suite exercises check logic with synthetic fixtures; this
@@ -64,6 +88,61 @@ describe("verifyVtxo — regtest integration", () => {
                 /Checkpoint verification failed/i.test(e)
             );
             expect(checkpointErrors).toEqual([]);
+        }
+    );
+
+    it(
+        "rejects a tampered chain from an adversarial indexer",
+        { timeout: 120_000 },
+        async () => {
+            // Proves the security claim unit tests cannot: a lying server
+            // that mutates the indexer response on the real wire format
+            // must be rejected. Unit fixtures are hand-built so they
+            // can't catch a verifier that silently accepts drift.
+            const alice = await createTestArkWallet();
+            await createVtxo(alice, 50_000);
+
+            execCommand("nigiri rpc --generate 1");
+            await new Promise((r) => setTimeout(r, 5000));
+
+            const vtxos = await alice.wallet.getVtxos();
+            expect(vtxos.length).toBeGreaterThan(0);
+            const vtxo = vtxos[0];
+
+            // Point every non-root entry's parent at a garbage txid —
+            // the chain no longer connects to the commitment.
+            const tampered = maliciousIndexer(
+                alice.wallet.indexerProvider,
+                (chain) =>
+                    chain.map((entry, idx) =>
+                        idx === 0
+                            ? entry
+                            : { ...entry, spends: ["f".repeat(64)] }
+                    )
+            );
+
+            const arkProvider = new RestArkProvider("http://localhost:7070");
+            const info = await arkProvider.getInfo();
+
+            const result = await verifyVtxo(
+                vtxo,
+                tampered,
+                alice.wallet.onchainProvider,
+                {
+                    pubkey: hex.decode(info.signerPubkey).slice(1),
+                    sweepInterval: {
+                        value: info.unilateralExitDelay,
+                        type:
+                            info.unilateralExitDelay >= 512n
+                                ? "seconds"
+                                : "blocks",
+                    },
+                },
+                { minConfirmationDepth: 0 }
+            );
+
+            expect(result.valid).toBe(false);
+            expect(result.errors.length).toBeGreaterThan(0);
         }
     );
 });
