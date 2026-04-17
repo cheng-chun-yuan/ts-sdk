@@ -158,4 +158,36 @@ describe("verifyCheckpointExpiry", () => {
             )
         ).toBe(true);
     });
+
+    it("parses unix-seconds expiry strings from the indexer wire format", () => {
+        // Real indexer emits seconds-since-epoch as a decimal string
+        // (see providers/indexer.ts: Number(vtxo.expiresAt) * 1000).
+        const futureSeconds = "4102444800"; // 2100-01-01
+        const pastSeconds = "1577836800"; // 2020-01-01
+
+        const future = verifyCheckpointExpiry(
+            {
+                txid: "cp".repeat(32),
+                type: ChainTxType.CHECKPOINT,
+                expiresAt: futureSeconds,
+                spends: ["aa".repeat(32)],
+            },
+            sweepInterval
+        );
+        expect(future.valid).toBe(true);
+        expect(future.errors).toEqual([]);
+        expect(future.warnings.some((w) => /has expired/i.test(w))).toBe(false);
+
+        const past = verifyCheckpointExpiry(
+            {
+                txid: "cp".repeat(32),
+                type: ChainTxType.CHECKPOINT,
+                expiresAt: pastSeconds,
+                spends: ["aa".repeat(32)],
+            },
+            sweepInterval
+        );
+        expect(past.valid).toBe(true);
+        expect(past.warnings.some((w) => /has expired/i.test(w))).toBe(true);
+    });
 });
