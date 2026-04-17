@@ -54,3 +54,6 @@ export type {
     SovereignExitResult,
     SovereignExitOptions,
 } from "./sovereignExit";
+
+export { buildVtxoDAG, renderDAGAscii } from "./dagVisualizer";
+export type { DAGNode, DAGEdge, VtxoDAG } from "./dagVisualizer";

@@ -235,6 +235,8 @@ export {
     syncExitData,
     sovereignExit,
     canSovereignExit,
+    buildVtxoDAG,
+    renderDAGAscii,
 } from "./verification";
 export type {
     VtxoVerificationResult,
@@ -254,6 +256,9 @@ export type {
     SovereignExitStep,
     SovereignExitResult,
     SovereignExitOptions,
+    DAGNode,
+    DAGEdge,
+    VtxoDAG,
 } from "./verification";
 
 // Contracts
