@@ -213,6 +213,28 @@ import { DelegatorManagerImpl, IDelegatorManager } from "./wallet/delegator";
 export * from "./arkfee";
 export * as asset from "./extension/asset";
 
+// Verification – Tier 1: Core VTXO Chain Verification
+export {
+    verifyVtxo,
+    verifyAllVtxos,
+    verifyOnchainAnchor,
+    verifyCheckpointTransactions,
+    verifyCheckpointExpiry,
+    verifyTreeSignatures,
+    verifyCosignerKeys,
+    verifyInternalKeysUnspendable,
+} from "./verification";
+export type {
+    VtxoVerificationResult,
+    VtxoVerificationOptions,
+    AnchorVerification,
+    CheckpointVerificationResult,
+    CheckpointTimelockResult,
+    SignatureVerificationResult,
+    CosignerKeyVerificationResult,
+    InternalKeyVerificationResult,
+} from "./verification";
+
 // Contracts
 import {
     ContractManager,
