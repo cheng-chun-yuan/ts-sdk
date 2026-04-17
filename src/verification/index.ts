@@ -40,3 +40,25 @@ export type {
     ChainTip,
     ParentConfirmation,
 } from "./scriptVerifier";
+
+export {
+    collectExitData,
+    validateExitData,
+    InMemoryExitDataRepository,
+} from "./exitDataStore";
+export type { ExitData, ExitDataRepository } from "./exitDataStore";
+
+export { StorageAdapterExitDataRepository } from "./exitDataRepository";
+
+export {
+    buildExitDataForVtxo,
+    buildExitDataForVtxos,
+    syncExitData,
+} from "./exitDataSync";
+
+export { sovereignExit, canSovereignExit } from "./sovereignExit";
+export type {
+    SovereignExitStep,
+    SovereignExitResult,
+    SovereignExitOptions,
+} from "./sovereignExit";
