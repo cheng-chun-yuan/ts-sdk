@@ -86,7 +86,12 @@ export function verifyCheckpointExpiry(
         return { valid: true, errors, warnings };
     }
 
-    const expiresAtMs = new Date(checkpoint.expiresAt).getTime();
+    // The indexer wire format is unix-seconds as a decimal string (see
+    // providers/indexer.ts). Fall back to Date.parse for ISO-8601 strings.
+    const asSeconds = Number(checkpoint.expiresAt);
+    const expiresAtMs = Number.isFinite(asSeconds)
+        ? asSeconds * 1000
+        : new Date(checkpoint.expiresAt).getTime();
     if (!Number.isFinite(expiresAtMs)) {
         errors.push(
             `Checkpoint ${checkpoint.txid} has invalid expiry timestamp ${checkpoint.expiresAt}`
