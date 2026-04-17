@@ -19,6 +19,7 @@ import {
     verifyCosignerKeys,
     verifyInternalKeysUnspendable,
 } from "./signatureVerifier";
+import { verifyScriptSatisfaction } from "./scriptVerifier";
 import { Transaction } from "../utils/transaction";
 
 function errorMessage(err: unknown): string {
@@ -480,6 +481,130 @@ export async function verifyVtxo(
     }
     partial.dagStructure = dagOk;
 
+    // Fetch chain tip once and reuse for Step 3e and Step 5 (anchor checks).
+    // Tolerant of failure: Step 3e cannot run without it, Step 5 falls back
+    // to a per-call fetch inside verifyOnchainAnchor.
+    const sharedChainTip = !isPreconfirmed
+        ? await onchain.getChainTip().catch(() => undefined)
+        : undefined;
+
+    // Step 3e: Verify tapscript satisfaction (CSV/CLTV/hash conditions)
+    if (!isPreconfirmed && sharedChainTip) {
+        try {
+            const chainTip = sharedChainTip;
+            // Cache parent commitment-tx statuses so a deep DAG spending
+            // the same root doesn't re-fetch getTxStatus per input. The
+            // cached value is the parent's confirmation metadata, or null
+            // if the parent isn't confirmed / can't be fetched.
+            const parentStatusCache = new Map<
+                string,
+                { blockHeight: number; blockTime: number } | null
+            >();
+            // Trusted prevout scripts for commitment parents, fetched on
+            // demand so the script verifier compares the control block
+            // against on-chain output scripts rather than against the
+            // PSBT-controlled witnessUtxo.
+            const commitmentScriptCache = new Map<
+                string,
+                Uint8Array | null
+            >();
+
+            for (const [txid, tx] of pathTxs) {
+                for (
+                    let inputIndex = 0;
+                    inputIndex < tx.inputsLength;
+                    inputIndex++
+                ) {
+                    const input = tx.getInput(inputIndex);
+                    if (
+                        !input.tapLeafScript ||
+                        input.tapLeafScript.length === 0
+                    ) {
+                        continue;
+                    }
+
+                    let parentConfirmation:
+                        | { blockHeight: number; blockTime: number }
+                        | undefined;
+                    let prevoutScript: Uint8Array | undefined;
+
+                    if (input.txid) {
+                        const parentTxid = hex.encode(input.txid);
+                        const parentVout = input.index ?? 0;
+
+                        const pathParent = pathTxs.get(parentTxid);
+                        if (pathParent) {
+                            prevoutScript =
+                                pathParent.getOutput(parentVout)?.script;
+                        } else if (commitmentTxidSet.has(parentTxid)) {
+                            if (!commitmentScriptCache.has(parentTxid)) {
+                                try {
+                                    const txHex =
+                                        await onchain.getTxHex(parentTxid);
+                                    const parentTx = Transaction.fromRaw(
+                                        hex.decode(txHex)
+                                    );
+                                    commitmentScriptCache.set(
+                                        parentTxid,
+                                        parentTx.getOutput(parentVout)
+                                            ?.script ?? null
+                                    );
+                                } catch {
+                                    commitmentScriptCache.set(
+                                        parentTxid,
+                                        null
+                                    );
+                                }
+                            }
+                            prevoutScript =
+                                commitmentScriptCache.get(parentTxid) ??
+                                undefined;
+                        }
+
+                        if (commitmentTxidSet.has(parentTxid)) {
+                            if (!parentStatusCache.has(parentTxid)) {
+                                try {
+                                    const status =
+                                        await onchain.getTxStatus(parentTxid);
+                                    parentStatusCache.set(
+                                        parentTxid,
+                                        status.confirmed
+                                            ? {
+                                                  blockHeight:
+                                                      status.blockHeight,
+                                                  blockTime: status.blockTime,
+                                              }
+                                            : null
+                                    );
+                                } catch {
+                                    // Record the miss so we don't retry; structural checks still run.
+                                    parentStatusCache.set(parentTxid, null);
+                                }
+                            }
+                            parentConfirmation =
+                                parentStatusCache.get(parentTxid) ?? undefined;
+                        }
+                    }
+
+                    const scriptResult = verifyScriptSatisfaction(
+                        tx,
+                        inputIndex,
+                        chainTip,
+                        parentConfirmation,
+                        prevoutScript
+                    );
+                    for (const error of scriptResult.errors) {
+                        pushError(
+                            `Script verification failed for tx ${txid} input ${inputIndex}: ${error}`
+                        );
+                    }
+                }
+            }
+        } catch (err) {
+            pushError(`Script verification error: ${errorMessage(err)}`);
+        }
+    }
+
     // ═══ Phase 3: Signatures — are the presigned txs real? ═══
 
     // Step 4: Verify signatures
@@ -552,8 +677,6 @@ export async function verifyVtxo(
     }
 
     let minConfirmationDepth = Infinity;
-    // Fetch chain tip once and share across all anchor checks in this verify call.
-    const sharedChainTip = await onchain.getChainTip().catch(() => undefined);
     for (const commitTxid of allCommitmentTxids) {
         try {
             const outputIndex =
