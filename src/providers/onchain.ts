@@ -54,6 +54,16 @@ export interface OnchainProvider {
     broadcastTransaction(...txs: string[]): Promise<string>;
 
     /**
+     * Fetch the raw transaction hex for a given txid. Required by the
+     * verification pipeline to parse commitment txs and compare their
+     * outputs against what the VTXO tree claims.
+     *
+     * @param txid - Transaction id to fetch
+     * @returns Raw transaction hex (without trailing whitespace)
+     */
+    getTxHex(txid: string): Promise<string>;
+
+    /**
      * Fetch outspend information for every output in a transaction.
      *
      * @param txid - Transaction id to inspect
@@ -165,6 +175,16 @@ export class EsploraProvider implements OnchainProvider {
             default:
                 throw new Error("Only 1 or 1C1P package can be broadcast");
         }
+    }
+
+    async getTxHex(txid: string): Promise<string> {
+        const response = await fetch(`${this.baseUrl}/tx/${txid}/hex`);
+        const text = await response.text();
+        if (!response.ok) {
+            throw new Error(`Failed to get transaction hex: ${text}`);
+        }
+        // Esplora appends a trailing newline; trim so hex.decode doesn't throw.
+        return text.trim();
     }
 
     async getTxOutspends(
