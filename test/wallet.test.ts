@@ -997,4 +997,94 @@ describe("ReadonlyWallet", () => {
         expect((readonlyWallet as any).sendBitcoin).toBeUndefined();
         expect((readonlyWallet as any).settle).toBeUndefined();
     });
+
+    describe("notifyIncomingFunds", () => {
+        const mockArkInfo = {
+            signerPubkey: mockServerKeyHex,
+            forfeitPubkey: mockServerKeyHex,
+            batchExpiry: BigInt(144),
+            unilateralExitDelay: BigInt(144),
+            boardingExitDelay: BigInt(144),
+            roundInterval: BigInt(144),
+            network: "mutinynet",
+            dust: BigInt(1000),
+            forfeitAddress: "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+            checkpointTapscript:
+                "5ab27520e35799157be4b37565bb5afe4d04e6a0fa0a4b6a4f4e48b0d904685d253cdbdbac",
+        };
+
+        it("forwards unconfirmed boarding events to the callback (bug_009 regression)", async () => {
+            // The notification boundary must surface mempool events so
+            // UIs can show a "pending deposit" indicator the moment a
+            // boarding tx hits the mempool. A confirmation filter at
+            // this layer silently dropped those events.
+            const privateKeyHex =
+                "ce66c68f8875c0c98a502c666303dc183a21600130013c06f9d1edf60207abf2";
+            const key = SingleKey.fromHex(privateKeyHex);
+            const compressedPubKey = await key.compressedPublicKey();
+            const readonlyIdentity =
+                ReadonlySingleKey.fromPublicKey(compressedPubKey);
+
+            let capturedOnchainCb: ((txs: any[]) => void) | null = null;
+
+            const onchainProvider = {
+                watchAddresses: vi.fn(
+                    async (_addrs: string[], cb: (txs: any[]) => void) => {
+                        capturedOnchainCb = cb;
+                        return () => {};
+                    }
+                ),
+            } as unknown as OnchainProvider;
+
+            const indexerProvider = {
+                subscribeForScripts: vi
+                    .fn<IndexerProvider["subscribeForScripts"]>()
+                    .mockResolvedValue("sub-id"),
+                unsubscribeForScripts: vi
+                    .fn<IndexerProvider["unsubscribeForScripts"]>()
+                    .mockResolvedValue(undefined),
+                getSubscription: vi.fn(async function* () {
+                    // Yield nothing; the onchain branch is what we care about.
+                }),
+            } as unknown as IndexerProvider;
+
+            const walletRepository = new InMemoryWalletRepository();
+            const contractRepository = new InMemoryContractRepository();
+
+            const wallet = await ReadonlyWallet.create({
+                identity: readonlyIdentity,
+                arkServerUrl: "http://localhost:7070",
+                arkProvider: {
+                    getInfo: vi.fn().mockResolvedValue(mockArkInfo),
+                } as Partial<ArkProvider> as ArkProvider,
+                indexerProvider,
+                onchainProvider,
+                storage: { walletRepository, contractRepository },
+            });
+
+            const boardingAddress = await wallet.getBoardingAddress();
+            const received: any[] = [];
+            await wallet.notifyIncomingFunds((funds) => {
+                received.push(funds);
+            });
+
+            expect(capturedOnchainCb).toBeTruthy();
+            capturedOnchainCb!([
+                {
+                    txid: hex.encode(new Uint8Array(32).fill(0xaa)),
+                    status: { confirmed: false },
+                    vout: [
+                        {
+                            scriptpubkey_address: boardingAddress,
+                            value: 50_000,
+                        },
+                    ],
+                },
+            ]);
+
+            const utxoEvents = received.filter((e) => e.type === "utxo");
+            expect(utxoEvents).toHaveLength(1);
+            expect(utxoEvents[0].coins[0].status.confirmed).toBe(false);
+        });
+    });
 });

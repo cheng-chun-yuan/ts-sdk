@@ -13,7 +13,10 @@ import { VtxoScript } from "../script/base";
 import {
     CSVMultisigTapscript,
     ConditionCSVMultisigTapscript,
+    TapscriptType,
 } from "../script/tapscript";
+import { setArkPsbtField } from "../utils/unknownFields";
+import { ConditionWitness } from "../utils/unknownFields";
 
 function errorMessage(err: unknown): string {
     return err instanceof Error ? err.message : String(err);
@@ -38,6 +41,11 @@ export interface SovereignExitOptions {
     identity?: Identity;
     outputAddress?: string;
     network?: Network;
+    // Witness-stack elements that satisfy the hash condition on a
+    // ConditionCSVMultisig exit leaf (e.g. a VHTLC unilateral claim).
+    // Typically a single 32-byte preimage. Omit for plain CSV-multisig
+    // exits; supply when the caller can sign a condition leaf.
+    preimage?: Uint8Array[];
 }
 
 export interface SovereignExitStep {
@@ -56,7 +64,15 @@ export interface SovereignExitResult {
 export async function canSovereignExit(
     vtxoOutpoint: Outpoint,
     exitDataRepo: ExitDataRepository,
-    onchain: OnchainProvider
+    onchain: OnchainProvider,
+    // Pass the identity that will actually sign the final claim so a
+    // VHTLC-style script doesn't report canExit=true for a leaf the
+    // caller can't sign (see buildFinalClaimTransaction).
+    identity?: Identity,
+    // If the elapsed leaf is a ConditionCSVMultisig (e.g. a VHTLC
+    // unilateralClaim) the witness needs a hash preimage; without one
+    // sovereignExit cannot finalize, so the leaf is skipped here too.
+    preimage?: Uint8Array[]
 ): Promise<{
     canExit: boolean;
     reason?: string;
@@ -124,10 +140,14 @@ export async function canSovereignExit(
 
     const vtxoScript = VtxoScript.decode(hex.decode(data.claimInput.tapTree));
     const chainTip = await onchain.getChainTip();
+    const signerPubkey = identity ? await identity.xOnlyPublicKey() : undefined;
+    const hasPreimage = Boolean(preimage && preimage.length > 0);
     const exit = availableExitPath(
         { height: claimStatus.blockHeight, time: claimStatus.blockTime },
         { height: chainTip.height, time: chainTip.time },
-        vtxoScript
+        vtxoScript,
+        signerPubkey,
+        hasPreimage
     );
 
     if (exit) {
@@ -137,7 +157,9 @@ export async function canSovereignExit(
     const remaining = shortestExitWait(
         { height: claimStatus.blockHeight, time: claimStatus.blockTime },
         { height: chainTip.height, time: chainTip.time },
-        vtxoScript
+        vtxoScript,
+        signerPubkey,
+        hasPreimage
     );
     return {
         canExit: false,
@@ -155,10 +177,23 @@ export async function canSovereignExit(
 function shortestExitWait(
     confirmedAt: { height: number; time: number },
     current: { height: number; time: number },
-    vtxoScript: VtxoScript
+    vtxoScript: VtxoScript,
+    signerPubkey?: Uint8Array,
+    hasPreimage?: boolean
 ): number {
     let min = Infinity;
     for (const exit of vtxoScript.exitPaths()) {
+        if (
+            signerPubkey &&
+            !exit.params.pubkeys.some(
+                (pk) => compareBytes(pk, signerPubkey) === 0
+            )
+        ) {
+            continue;
+        }
+        if (exit.type === TapscriptType.ConditionCSVMultisig && !hasPreimage) {
+            continue;
+        }
         const wait =
             exit.params.timelock.type === "blocks"
                 ? confirmedAt.height +
@@ -329,7 +364,8 @@ export async function sovereignExit(
                     options.outputAddress,
                     options.network,
                     options.identity,
-                    onchain
+                    onchain,
+                    options.preimage
                 );
             } catch (err) {
                 // buildFinalClaimTransaction can throw for unindexed
@@ -391,7 +427,8 @@ async function buildFinalClaimTransaction(
     outputAddress: string,
     network: Network,
     identity: Identity,
-    onchain: OnchainProvider
+    onchain: OnchainProvider,
+    preimage?: Uint8Array[]
 ): Promise<{
     tx?: Transaction;
     waitStep?: SovereignExitStep;
@@ -415,11 +452,13 @@ async function buildFinalClaimTransaction(
     // elapsed first. buildFinalClaimTransaction will then try to sign
     // a leaf that actually lists this caller's pubkey.
     const signerPubkey = await identity.xOnlyPublicKey();
+    const hasPreimage = Boolean(preimage && preimage.length > 0);
     const exit = availableExitPath(
         { height: txStatus.blockHeight, time: txStatus.blockTime },
         { height: chainTip.height, time: chainTip.time },
         vtxoScript,
-        signerPubkey
+        signerPubkey,
+        hasPreimage
     );
 
     if (!exit) {
@@ -453,21 +492,35 @@ async function buildFinalClaimTransaction(
         sighashType: SigHash.DEFAULT,
     });
 
+    // Condition-based leaves (e.g. VHTLC unilateralClaim) need the hash
+    // preimage attached as a PSBT unknown field so .finalize() can build
+    // a satisfying witness stack.
+    if (exit.type === TapscriptType.ConditionCSVMultisig) {
+        if (!preimage || preimage.length === 0) {
+            // Defensive: availableExitPath shouldn't return a condition
+            // leaf when no preimage was passed, but fail loudly if it does
+            // rather than producing an unfinalizable tx.
+            throw new Error(
+                "Selected exit leaf requires a preimage; pass options.preimage"
+            );
+        }
+        setArkPsbtField(tx, 0, ConditionWitness, preimage);
+    }
+
     let feeRate = await onchain.getFeeRate();
     if (!feeRate || feeRate < 1) {
         feeRate = 1;
     }
 
-    // Conservative vsize estimate for 1-in 1-out taproot script-path spend:
-    // ~43 vB for output + ~58 vB base input + witness weight for a single
-    // CSV-multisig leaf + control block. 150 vB covers this with slack.
-    const FINAL_CLAIM_VSIZE_ESTIMATE = 150;
+    const estimatedVsize = estimateFinalClaimVsize(
+        spendingLeaf,
+        exit.type,
+        exit.params.pubkeys.length,
+        preimage
+    );
     const FINAL_CLAIM_MIN_FEE_SATS = 200;
     const fee = BigInt(
-        Math.max(
-            FINAL_CLAIM_MIN_FEE_SATS,
-            Math.ceil(feeRate * FINAL_CLAIM_VSIZE_ESTIMATE)
-        )
+        Math.max(FINAL_CLAIM_MIN_FEE_SATS, Math.ceil(feeRate * estimatedVsize))
     );
     const sendAmount = BigInt(claimInput.value) - fee;
     if (sendAmount <= 0n) {
@@ -555,6 +608,50 @@ function topoSortChainTxIds(
     return { order };
 }
 
+/**
+ * Conservative vsize estimate for a 1-in 1-out taproot script-path spend
+ * of the given leaf. Accounts for:
+ * - a P2TR output (~43 vB)
+ * - base input + segwit marker/flag
+ * - the schnorr signature per required pubkey
+ * - condition-leaf preimage bytes, if supplied
+ * - the leaf script and its control block
+ *
+ * Underestimating here means the final claim pays below the requested
+ * fee rate — bad during fee spikes, which is exactly when unilateral
+ * exits happen.
+ */
+function estimateFinalClaimVsize(
+    spendingLeaf: import("../script/base").TapLeafScript,
+    exitType: TapscriptType,
+    numPubkeys: number,
+    preimage?: Uint8Array[]
+): number {
+    const [controlBlockMeta, scriptWithVersion] = spendingLeaf;
+    // scriptWithVersion is the leaf script followed by a 1-byte leaf version.
+    const scriptLen = Math.max(0, scriptWithVersion.length - 1);
+    const cbLen = 33 + 32 * controlBlockMeta.merklePath.length;
+
+    // 1 byte for each witness-stack item length prefix is accurate for
+    // items <= 252 bytes, which is true for all of these.
+    let witnessBytes = 1; // stack-count varint
+    if (exitType === TapscriptType.ConditionCSVMultisig && preimage) {
+        for (const p of preimage) {
+            witnessBytes += 1 + p.length;
+        }
+    }
+    witnessBytes += numPubkeys * (1 + 64); // schnorr default-sighash sig per signer
+    witnessBytes += 1 + scriptLen;
+    witnessBytes += 1 + cbLen;
+
+    // Non-witness: version(4) + input-count(1) + (32+4 txid/vout + 1
+    // scriptsig-len + 4 sequence) + output-count(1) + (8 amount + 1
+    // script-len + 34 P2TR script) + locktime(4) = 94 bytes.
+    const nonWitnessBytes = 94;
+    const weight = nonWitnessBytes * 4 + 2 /* marker+flag */ + witnessBytes;
+    return Math.ceil(weight / 4);
+}
+
 function availableExitPath(
     confirmedAt: { height: number; time: number },
     current: { height: number; time: number },
@@ -563,7 +660,12 @@ function availableExitPath(
     // sign. Without this filter, a VHTLC-style script with multiple exits
     // (e.g. receiver-with-preimage, sender-with-CSV) would return whichever
     // path elapsed first, even if the caller can't actually sign it.
-    signerPubkey?: Uint8Array
+    signerPubkey?: Uint8Array,
+    // Condition leaves (e.g. VHTLC unilateralClaim) cannot be finalized
+    // without a hash preimage. Skip them when the caller didn't supply
+    // one so canSovereignExit reflects what sovereignExit can actually
+    // build.
+    hasPreimage?: boolean
 ): CSVMultisigTapscript.Type | ConditionCSVMultisigTapscript.Type | undefined {
     for (const exit of vtxoScript.exitPaths()) {
         if (
@@ -572,6 +674,9 @@ function availableExitPath(
                 (pk) => compareBytes(pk, signerPubkey) === 0
             )
         ) {
+            continue;
+        }
+        if (exit.type === TapscriptType.ConditionCSVMultisig && !hasPreimage) {
             continue;
         }
         if (exit.params.timelock.type === "blocks") {

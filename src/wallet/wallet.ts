@@ -918,14 +918,16 @@ export class ReadonlyWallet implements IReadonlyWallet {
                             const vout = findVoutOnTx(tx);
                             const value = Number(tx.vout[vout].value);
                             return { txid, vout, value, status };
-                        })
-                        .filter((coin) => coin.status.confirmed);
+                        });
 
                     if (coins.length === 0) {
                         return;
                     }
 
-                    // and notify via callback
+                    // Surface both mempool and confirmed events; the
+                    // esplora watcher fires the callback on each state
+                    // change, and UIs want the "pending deposit" hint
+                    // the moment a tx hits the mempool.
                     eventCallback({
                         type: "utxo",
                         coins,

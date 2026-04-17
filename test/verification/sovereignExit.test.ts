@@ -12,6 +12,7 @@ import type { OnchainProvider } from "../../src/providers/onchain";
 import { Transaction as ArkTransaction } from "../../src/utils/transaction";
 import { SingleKey } from "../../src/identity/singleKey";
 import { DefaultVtxo } from "../../src/script/default";
+import { VHTLC } from "../../src/script/vhtlc";
 import { getNetwork } from "../../src/networks";
 
 describe("canSovereignExit", () => {
@@ -90,6 +91,154 @@ describe("canSovereignExit", () => {
         expect(result.canExit).toBe(true);
         expect(result.exitPath).toBeDefined();
         expect(result.timelockRemaining).toBe(0);
+    });
+
+    it("returns canExit=false when identity cannot sign any elapsed exit leaf", async () => {
+        // Regression for bug_001: without an identity filter, a VHTLC-style
+        // script returns canExit=true for the sender-only refund leaf whose
+        // CSV elapsed first, even when the caller is the receiver and
+        // buildFinalClaimTransaction would later reject that leaf.
+        const senderIdentity = SingleKey.fromPrivateKey(
+            randomPrivateKeyBytes()
+        );
+        const receiverIdentity = SingleKey.fromPrivateKey(
+            randomPrivateKeyBytes()
+        );
+        const serverIdentity = SingleKey.fromPrivateKey(
+            randomPrivateKeyBytes()
+        );
+        const senderPk = await senderIdentity.xOnlyPublicKey();
+        const receiverPk = await receiverIdentity.xOnlyPublicKey();
+        const serverPk = await serverIdentity.xOnlyPublicKey();
+
+        const script = new VHTLC.Script({
+            sender: senderPk,
+            receiver: receiverPk,
+            server: serverPk,
+            preimageHash: new Uint8Array(20).fill(0x33),
+            refundLocktime: 1_000_000n,
+            unilateralClaimDelay: { type: "blocks", value: 2000n },
+            unilateralRefundDelay: { type: "blocks", value: 1000n },
+            unilateralRefundWithoutReceiverDelay: {
+                type: "blocks",
+                value: 50n,
+            },
+        });
+
+        const repo = new InMemoryExitDataRepository();
+        const data = makeExitData("bb".repeat(32));
+        data.claimInput = {
+            txid: "bb".repeat(32),
+            vout: 0,
+            value: 10_000,
+            tapTree: hex.encode(script.encode()),
+        };
+        await repo.saveExitData(data);
+
+        // Commitment/claim confirmed at 100, tip at 160: sender-only leaf
+        // (50 blocks) has elapsed; both leaves that list the receiver's
+        // pubkey are still locked (1000 and 2000).
+        const onchain = createMockOnchain({
+            confirmed: true,
+            blockHeight: 100,
+        });
+        (onchain.getChainTip as ReturnType<typeof vi.fn>).mockResolvedValue({
+            height: 160,
+            time: 1700001000,
+            hash: "00".repeat(32),
+        });
+
+        const result = await canSovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            onchain,
+            receiverIdentity
+        );
+
+        expect(result.canExit).toBe(false);
+        expect(result.reason).toMatch(/timelock/i);
+        expect(result.timelockRemaining).toBeGreaterThan(0);
+    });
+
+    it("skips condition-based leaves when no preimage is supplied (bug_008)", async () => {
+        // Regression for bug_008: canSovereignExit used to return
+        // canExit=true for a VHTLC unilateralClaim leaf (receiver path)
+        // whose CSV elapsed first, but sovereignExit could not build a
+        // valid witness without the preimage, producing a confusing
+        // canExit=true / success=false mismatch.
+        const senderIdentity = SingleKey.fromPrivateKey(
+            randomPrivateKeyBytes()
+        );
+        const receiverIdentity = SingleKey.fromPrivateKey(
+            randomPrivateKeyBytes()
+        );
+        const serverIdentity = SingleKey.fromPrivateKey(
+            randomPrivateKeyBytes()
+        );
+        const senderPk = await senderIdentity.xOnlyPublicKey();
+        const receiverPk = await receiverIdentity.xOnlyPublicKey();
+        const serverPk = await serverIdentity.xOnlyPublicKey();
+
+        const preimage = new Uint8Array(32).fill(0x77);
+
+        const script = new VHTLC.Script({
+            sender: senderPk,
+            receiver: receiverPk,
+            server: serverPk,
+            // hash160 of the preimage is not checked by exit-path logic
+            // (that's the tapscript executor's job); any 20-byte value is
+            // fine for the availableExitPath filter test.
+            preimageHash: new Uint8Array(20).fill(0x33),
+            refundLocktime: 1_000_000n,
+            unilateralClaimDelay: { type: "blocks", value: 50n },
+            unilateralRefundDelay: { type: "blocks", value: 2000n },
+            unilateralRefundWithoutReceiverDelay: {
+                type: "blocks",
+                value: 3000n,
+            },
+        });
+
+        const repo = new InMemoryExitDataRepository();
+        const data = makeExitData("bb".repeat(32));
+        data.claimInput = {
+            txid: "bb".repeat(32),
+            vout: 0,
+            value: 10_000,
+            tapTree: hex.encode(script.encode()),
+        };
+        await repo.saveExitData(data);
+
+        const onchain = createMockOnchain({
+            confirmed: true,
+            blockHeight: 100,
+        });
+        (onchain.getChainTip as ReturnType<typeof vi.fn>).mockResolvedValue({
+            height: 200,
+            time: 1700001000,
+            hash: "00".repeat(32),
+        });
+
+        // Without preimage: the condition leaf is skipped; the other
+        // leaves (collab refund, sender-only refund) are either locked
+        // or not signable by the receiver.
+        const noPreimage = await canSovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            onchain,
+            receiverIdentity
+        );
+        expect(noPreimage.canExit).toBe(false);
+
+        // With preimage: the receiver can exit now via unilateralClaim.
+        const withPreimage = await canSovereignExit(
+            data.vtxoOutpoint,
+            repo,
+            onchain,
+            receiverIdentity,
+            [preimage]
+        );
+        expect(withPreimage.canExit).toBe(true);
+        expect(withPreimage.exitPath).toBe("condition-csv-multisig");
     });
 
     it("returns false with timelockRemaining when the CSV is still pending", async () => {

@@ -15,6 +15,11 @@ type StoredIndex = string[];
  * prevents bundlers from pulling `fs` into browser builds.
  */
 export class StorageAdapterExitDataRepository implements ExitDataRepository {
+    // Serializes read-modify-write of the namespace index so concurrent
+    // saveExitData / deleteExitData calls (fanned out by syncExitData via
+    // Promise.allSettled) can't stomp on each other's appends.
+    private indexLock: Promise<void> = Promise.resolve();
+
     constructor(
         private readonly storage: StorageAdapter,
         private readonly namespace: string = "exit-data"
@@ -23,11 +28,9 @@ export class StorageAdapterExitDataRepository implements ExitDataRepository {
     async saveExitData(data: ExitData): Promise<void> {
         const key = this.entryKey(data.vtxoOutpoint);
         await this.storage.setItem(key, JSON.stringify(data));
-        const index = await this.getIndex();
-        if (!index.includes(key)) {
-            index.push(key);
-            await this.setIndex(index);
-        }
+        await this.mutateIndex((index) =>
+            index.includes(key) ? index : [...index, key]
+        );
     }
 
     async getExitData(outpoint: Outpoint): Promise<ExitData | null> {
@@ -48,15 +51,33 @@ export class StorageAdapterExitDataRepository implements ExitDataRepository {
 
     async deleteExitData(outpoint: Outpoint): Promise<void> {
         const key = this.entryKey(outpoint);
-        const index = await this.getIndex();
         await this.storage.removeItem(key);
-        await this.setIndex(index.filter((entry) => entry !== key));
+        await this.mutateIndex((index) =>
+            index.filter((entry) => entry !== key)
+        );
     }
 
     async clear(): Promise<void> {
-        const index = await this.getIndex();
-        await Promise.all(index.map((key) => this.storage.removeItem(key)));
-        await this.storage.removeItem(this.indexKey());
+        await this.mutateIndex(async (index) => {
+            await Promise.all(index.map((key) => this.storage.removeItem(key)));
+            await this.storage.removeItem(this.indexKey());
+            return [];
+        });
+    }
+
+    private mutateIndex(
+        mutator: (index: StoredIndex) => StoredIndex | Promise<StoredIndex>
+    ): Promise<void> {
+        const next = this.indexLock.then(async () => {
+            const current = await this.getIndex();
+            const updated = await mutator(current);
+            await this.setIndex(updated);
+        });
+        // Swallow rejections on the chain itself so one failed mutation
+        // doesn't permanently poison future mutations. The awaited promise
+        // still surfaces the error to the caller.
+        this.indexLock = next.catch(() => undefined);
+        return next;
     }
 
     private entryKey(outpoint: Outpoint): string {

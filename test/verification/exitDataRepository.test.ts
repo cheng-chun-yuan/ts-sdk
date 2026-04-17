@@ -60,6 +60,52 @@ describe("StorageAdapterExitDataRepository", () => {
 
         expect(await repo.getExitData(data.vtxoOutpoint)).toBeNull();
     });
+
+    it("keeps the index consistent under concurrent saves", async () => {
+        // Regression for bug_007: saveExitData / deleteExitData used to
+        // perform a non-atomic read-modify-write on the namespace index.
+        // syncExitData fans out saves via Promise.allSettled, so a
+        // concurrent writer would overwrite siblings' appends and drop
+        // entries from getAllExitData / clear.
+        const repo = new StorageAdapterExitDataRepository(
+            new MemoryStorageAdapter()
+        );
+        const entries = Array.from({ length: 10 }, (_, i) => {
+            const hexByte = i.toString(16).padStart(2, "0");
+            return makeExitData(hexByte.repeat(32));
+        });
+
+        await Promise.all(entries.map((e) => repo.saveExitData(e)));
+
+        const all = await repo.getAllExitData();
+        expect(all).toHaveLength(entries.length);
+    });
+
+    it("keeps the index consistent under concurrent saves and deletes", async () => {
+        const repo = new StorageAdapterExitDataRepository(
+            new MemoryStorageAdapter()
+        );
+        const entries = Array.from({ length: 6 }, (_, i) => {
+            const hexByte = i.toString(16).padStart(2, "0");
+            return makeExitData(hexByte.repeat(32));
+        });
+        await Promise.all(entries.map((e) => repo.saveExitData(e)));
+
+        // Delete half in parallel.
+        await Promise.all(
+            entries.slice(0, 3).map((e) => repo.deleteExitData(e.vtxoOutpoint))
+        );
+
+        const remaining = await repo.getAllExitData();
+        expect(remaining).toHaveLength(3);
+        const txids = remaining.map((e) => e.vtxoOutpoint.txid).sort();
+        expect(txids).toEqual(
+            entries
+                .slice(3)
+                .map((e) => e.vtxoOutpoint.txid)
+                .sort()
+        );
+    });
 });
 
 function makeExitData(txid: string = "aa".repeat(32)): ExitData {
