@@ -3,11 +3,17 @@ import { base64, hex } from "@scure/base";
 import { Transaction } from "@scure/btc-signer";
 import { hash160 } from "@scure/btc-signer/utils.js";
 import {
+    EsploraProvider,
+    InMemoryContractRepository,
+    InMemoryExitDataRepository,
+    InMemoryWalletRepository,
     networks,
     RestArkProvider,
     RestIndexerProvider,
+    sovereignExit,
     VHTLC,
     verifyVtxo,
+    Wallet,
     type IndexerProvider,
 } from "../../src";
 import {
@@ -333,6 +339,70 @@ describe("verifyVtxo — regtest integration", () => {
                 )
             );
             expect(scriptErrors).toEqual([]);
+        }
+    );
+
+    it(
+        "sovereignExit broadcasts the virtual tx chain against real indexer PSBTs",
+        { timeout: 180_000 },
+        async () => {
+            // Unit tests mock broadcastTransaction and synthesize PSBTs;
+            // they can't prove the topo-sort + broadcast loop handles
+            // arkd's actual virtual-tx PSBT byte layout. This test lets
+            // sovereignExit walk a real chain without the final-claim
+            // options so we only exercise the tree-walk path.
+            const identity = createTestIdentity();
+            const exitDataRepository = new InMemoryExitDataRepository();
+            const alice = {
+                identity,
+                wallet: await Wallet.create({
+                    identity,
+                    arkServerUrl: "http://localhost:7070",
+                    onchainProvider: new EsploraProvider(
+                        "http://localhost:3000",
+                        { forcePolling: true, pollingInterval: 2000 }
+                    ),
+                    storage: {
+                        walletRepository: new InMemoryWalletRepository(),
+                        contractRepository: new InMemoryContractRepository(),
+                        exitDataRepository,
+                    },
+                    settlementConfig: false,
+                }),
+            };
+            await createVtxo(alice, 50_000);
+
+            execCommand("nigiri rpc --generate 1");
+            await new Promise((r) => setTimeout(r, 5000));
+
+            const vtxos = await alice.wallet.getVtxos();
+            expect(vtxos.length).toBeGreaterThan(0);
+            const vtxo = vtxos[0];
+
+            const result = await sovereignExit(
+                { txid: vtxo.txid, vout: vtxo.vout },
+                exitDataRepository,
+                alice.wallet.onchainProvider
+                // No identity/outputAddress/network → chain broadcast only.
+            );
+
+            // The walker produces a "broadcast" (or "wait") step per
+            // virtual tx. We can't broadcast them successfully without a
+            // fee-paying final claim (virtual txs carry zero fee and
+            // bitcoin core's minrelayfee ≥ 1 sat/vB rejects them), so
+            // treat the min-relay rejection as a success signal that
+            // the walker reached bitcoin core with a real PSBT. Any
+            // other error would indicate a genuine bug in the topo sort
+            // or PSBT handling.
+            expect(result.steps.length).toBeGreaterThan(0);
+            const broadcastSteps = result.steps.filter(
+                (s) => s.type === "broadcast"
+            );
+            expect(broadcastSteps.length).toBeGreaterThan(0);
+            const nonFeeErrors = result.errors.filter(
+                (e) => !/min relay fee|mempool-min-fee/i.test(e)
+            );
+            expect(nonFeeErrors).toEqual([]);
         }
     );
 });
