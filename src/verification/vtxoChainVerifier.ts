@@ -504,10 +504,7 @@ export async function verifyVtxo(
             // demand so the script verifier compares the control block
             // against on-chain output scripts rather than against the
             // PSBT-controlled witnessUtxo.
-            const commitmentScriptCache = new Map<
-                string,
-                Uint8Array | null
-            >();
+            const commitmentScriptCache = new Map<string, Uint8Array | null>();
 
             for (const [txid, tx] of pathTxs) {
                 for (
@@ -550,10 +547,7 @@ export async function verifyVtxo(
                                             ?.script ?? null
                                     );
                                 } catch {
-                                    commitmentScriptCache.set(
-                                        parentTxid,
-                                        null
-                                    );
+                                    commitmentScriptCache.set(parentTxid, null);
                                 }
                             }
                             prevoutScript =

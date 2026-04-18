@@ -303,16 +303,14 @@ describe("verifyVtxo", () => {
 
         it("should support root transactions that aggregate multiple inputs", async () => {
             const sharedVtxoScript = await makeCsvVtxoScript();
-            const { tx: commit1, rawHex: commitHex1 } =
-                await buildCommitmentTx(
-                    20_000n,
-                    sharedVtxoScript.pkScript
-                );
-            const { tx: commit2, rawHex: commitHex2 } =
-                await buildCommitmentTx(
-                    7_000n,
-                    sharedVtxoScript.pkScript
-                );
+            const { tx: commit1, rawHex: commitHex1 } = await buildCommitmentTx(
+                20_000n,
+                sharedVtxoScript.pkScript
+            );
+            const { tx: commit2, rawHex: commitHex2 } = await buildCommitmentTx(
+                7_000n,
+                sharedVtxoScript.pkScript
+            );
             const multiInputTx = await buildCsvPathTx({
                 parentTxid: commit1.id,
                 parentOutputScript: sharedVtxoScript.pkScript,
@@ -405,13 +403,14 @@ describe("verifyVtxo", () => {
 
         it("should accept a valid root tx when the commitment link is not input 0", async () => {
             const sharedVtxoScript = await makeCsvVtxoScript();
-            const { tx: commit1, rawHex: commitHex1 } =
-                await buildCommitmentTx(
-                    20_000n,
-                    sharedVtxoScript.pkScript
-                );
-            const { tx: commit2, rawHex: commitHex2 } =
-                await buildCommitmentTx(0n, sharedVtxoScript.pkScript);
+            const { tx: commit1, rawHex: commitHex1 } = await buildCommitmentTx(
+                20_000n,
+                sharedVtxoScript.pkScript
+            );
+            const { tx: commit2, rawHex: commitHex2 } = await buildCommitmentTx(
+                0n,
+                sharedVtxoScript.pkScript
+            );
             const secondaryInput = await buildCsvInput({
                 parentTxid: commit2.id,
                 parentOutputScript: sharedVtxoScript.pkScript,
@@ -915,10 +914,7 @@ describe("verifyVtxo", () => {
         it("should stay valid when only outspend lookup degrades to a warning", async () => {
             const sharedVtxoScript = await makeCsvVtxoScript();
             const { tx: commitmentTx, rawHex: commitmentHex } =
-                await buildCommitmentTx(
-                    10_000n,
-                    sharedVtxoScript.pkScript
-                );
+                await buildCommitmentTx(10_000n, sharedVtxoScript.pkScript);
             const csvTx = await buildCsvPathTx({
                 parentTxid: commitmentTx.id,
                 parentOutputScript: sharedVtxoScript.pkScript,
