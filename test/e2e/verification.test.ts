@@ -1,10 +1,20 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { base64, hex } from "@scure/base";
 import { Transaction } from "@scure/btc-signer";
-import { RestArkProvider, verifyVtxo, type IndexerProvider } from "../../src";
+import { hash160 } from "@scure/btc-signer/utils.js";
 import {
+    networks,
+    RestArkProvider,
+    RestIndexerProvider,
+    VHTLC,
+    verifyVtxo,
+    type IndexerProvider,
+} from "../../src";
+import {
+    arkdExec,
     beforeEachFaucet,
     createTestArkWallet,
+    createTestIdentity,
     createVtxo,
     execCommand,
 } from "./utils";
@@ -241,6 +251,88 @@ describe("verifyVtxo — regtest integration", () => {
                     /signature|tapKey|verify|invalid/i.test(e)
                 )
             ).toBe(true);
+        }
+    );
+
+    it(
+        "verifies a Boltz-style submarine swap VHTLC (hash preimage on ConditionCSVMultisig leaf)",
+        { timeout: 120_000 },
+        async () => {
+            // Tier 2.3 demonstration per spec: a Boltz Ark↔LN submarine
+            // swap is secured by a VHTLC on the Ark side whose exit leaf
+            // is a ConditionCSVMultisig — an HTLC-style hash preimage
+            // script combined with a CSV timelock. Funding a real VHTLC
+            // through arkd and running verifyVtxo exercises exactly the
+            // hash-preimage verification path used in Boltz swaps, against
+            // arkd's actual taproot byte layout. Unit fixtures encode
+            // these via our own helpers, so only a real VHTLC funded
+            // through arkd catches wire-format drift on this path.
+            const sender = createTestIdentity();
+            const receiver = createTestIdentity();
+            const arkProvider = new RestArkProvider("http://localhost:7070");
+            const indexerProvider = new RestIndexerProvider(
+                "http://localhost:7070"
+            );
+            const info = await arkProvider.getInfo();
+            const serverPubkey = hex.decode(info.signerPubkey).slice(1);
+
+            const preimage = new TextEncoder().encode("preimage");
+            const vhtlcScript = new VHTLC.Script({
+                preimageHash: hash160(preimage),
+                sender: await sender.xOnlyPublicKey(),
+                receiver: await receiver.xOnlyPublicKey(),
+                server: serverPubkey,
+                refundLocktime: BigInt(1000),
+                unilateralClaimDelay: { type: "blocks", value: 100n },
+                unilateralRefundDelay: { type: "blocks", value: 50n },
+                unilateralRefundWithoutReceiverDelay: {
+                    type: "blocks",
+                    value: 50n,
+                },
+            });
+
+            const address = vhtlcScript
+                .address(networks.regtest.hrp, serverPubkey)
+                .encode();
+            execCommand(
+                `${arkdExec} ark send --to ${address} --amount 1000 --password secret`
+            );
+            await new Promise((r) => setTimeout(r, 2000));
+
+            execCommand("nigiri rpc --generate 1");
+            await new Promise((r) => setTimeout(r, 5000));
+
+            const { vtxos } = await indexerProvider.getVtxos({
+                scripts: [hex.encode(vhtlcScript.pkScript)],
+                spendableOnly: true,
+            });
+            expect(vtxos.length).toBe(1);
+
+            const result = await verifyVtxo(
+                vtxos[0],
+                indexerProvider,
+                // A minimal wallet is cheaper than spinning up its own
+                // EsploraProvider — reuse a throwaway alice's.
+                (await createTestArkWallet()).wallet.onchainProvider,
+                {
+                    pubkey: serverPubkey,
+                    sweepInterval: {
+                        value: info.unilateralExitDelay,
+                        type:
+                            info.unilateralExitDelay >= 512n
+                                ? "seconds"
+                                : "blocks",
+                    },
+                },
+                { minConfirmationDepth: 0 }
+            );
+
+            const scriptErrors = result.errors.filter((e) =>
+                /script satisfaction|taproot leaf|condition|hash preimage/i.test(
+                    e
+                )
+            );
+            expect(scriptErrors).toEqual([]);
         }
     );
 });
