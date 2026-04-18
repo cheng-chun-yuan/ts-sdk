@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { hex } from "@scure/base";
+import { base64, hex } from "@scure/base";
+import { Transaction } from "@scure/btc-signer";
 import { RestArkProvider, verifyVtxo, type IndexerProvider } from "../../src";
 import {
     beforeEachFaucet,
@@ -143,6 +144,103 @@ describe("verifyVtxo — regtest integration", () => {
 
             expect(result.valid).toBe(false);
             expect(result.errors.length).toBeGreaterThan(0);
+        }
+    );
+
+    it(
+        "rejects a forged tapKeySig from an adversarial indexer",
+        { timeout: 120_000 },
+        async () => {
+            // Wire-level proof that Schnorr verification fires on real
+            // PSBT bytes: wrap the indexer so `getVirtualTxs` returns
+            // PSBTs whose first-encountered tapKeySig has one byte flipped.
+            // `verifyTreeSignatures` must reject this — otherwise the
+            // ASP could forge branch signatures at will.
+            const alice = await createTestArkWallet();
+            await createVtxo(alice, 50_000);
+
+            execCommand("nigiri rpc --generate 1");
+            await new Promise((r) => setTimeout(r, 5000));
+
+            const vtxos = await alice.wallet.getVtxos();
+            expect(vtxos.length).toBeGreaterThan(0);
+            const vtxo = vtxos[0];
+
+            const real = alice.wallet.indexerProvider;
+            const tampered = new Proxy(real, {
+                get(target, prop, receiver) {
+                    if (prop === "getVirtualTxs") {
+                        return async (
+                            ...args: Parameters<
+                                IndexerProvider["getVirtualTxs"]
+                            >
+                        ) => {
+                            const result = await target.getVirtualTxs(...args);
+                            let mutated = false;
+                            const txs = result.txs.map((psbtB64) => {
+                                if (mutated) return psbtB64;
+                                try {
+                                    const tx = Transaction.fromPSBT(
+                                        base64.decode(psbtB64)
+                                    );
+                                    for (let i = 0; i < tx.inputsLength; i++) {
+                                        const input = tx.getInput(i);
+                                        if (
+                                            input.tapKeySig &&
+                                            input.tapKeySig.length > 0
+                                        ) {
+                                            const forged = new Uint8Array(
+                                                input.tapKeySig
+                                            );
+                                            forged[0] ^= 0xff;
+                                            tx.updateInput(i, {
+                                                tapKeySig: forged,
+                                            });
+                                            mutated = true;
+                                            break;
+                                        }
+                                    }
+                                    return base64.encode(tx.toPSBT());
+                                } catch {
+                                    return psbtB64;
+                                }
+                            });
+                            return { ...result, txs };
+                        };
+                    }
+                    const value = Reflect.get(target, prop, receiver);
+                    return typeof value === "function"
+                        ? value.bind(target)
+                        : value;
+                },
+            });
+
+            const arkProvider = new RestArkProvider("http://localhost:7070");
+            const info = await arkProvider.getInfo();
+
+            const result = await verifyVtxo(
+                vtxo,
+                tampered,
+                alice.wallet.onchainProvider,
+                {
+                    pubkey: hex.decode(info.signerPubkey).slice(1),
+                    sweepInterval: {
+                        value: info.unilateralExitDelay,
+                        type:
+                            info.unilateralExitDelay >= 512n
+                                ? "seconds"
+                                : "blocks",
+                    },
+                },
+                { minConfirmationDepth: 0 }
+            );
+
+            expect(result.valid).toBe(false);
+            expect(
+                result.errors.some((e) =>
+                    /signature|tapKey|verify|invalid/i.test(e)
+                )
+            ).toBe(true);
         }
     );
 });
