@@ -243,5 +243,4 @@ describe("verifyVtxo — regtest integration", () => {
             ).toBe(true);
         }
     );
-
 });
