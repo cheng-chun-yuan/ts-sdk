@@ -686,6 +686,50 @@ await Unroll.completeUnroll(
 - The `completeUnroll` method can only be called after all virtual outputs are fully unrolled and the timelock has expired
 - You need sufficient onchain funds in the `OnchainWallet` to pay for P2A transaction fees
 
+### Client-Side VTXO Verification
+
+The `src/verification/` stack lets the wallet prove each VTXO is real, well-formed, and anchored on Bitcoin without trusting the ASP. It also persists the data needed to exit unilaterally if the ASP disappears. Full detail lives in [docs/VERIFICATION.md](./docs/VERIFICATION.md).
+
+```typescript
+// Verify one VTXO — returns errors/warnings and structured partialChecks
+// for preconfirmed outputs that have no commitment tx yet.
+const result = await wallet.verifyVtxo(vtxo)
+if (!result.valid) console.error(result.errors)
+
+// Verify every VTXO the wallet currently holds.
+const results = await wallet.verifyAllVtxos()
+
+// Broadcast a VTXO's presigned chain + claim tx without contacting the ASP.
+// Exit data is collected automatically on every VTXO sync.
+import { sovereignExit, canSovereignExit } from '@arkade-os/sdk'
+
+const { canExit, timelockRemaining } = await canSovereignExit(
+  { txid: vtxo.txid, vout: vtxo.vout },
+  wallet.exitDataRepository,
+  wallet.onchainProvider,
+  wallet.identity,
+)
+
+if (canExit) {
+  await sovereignExit(
+    { txid: vtxo.txid, vout: vtxo.vout },
+    wallet.exitDataRepository,
+    wallet.onchainProvider,
+    {
+      identity: wallet.identity,
+      outputAddress: myBitcoinAddress,
+      network: networks.bitcoin,
+    },
+  )
+}
+```
+
+Three tiers ship together:
+
+- **Tier 1** — chain structure, MuSig2 cosigners, NUMS internal key, Schnorr signatures, onchain anchor + double-spend check.
+- **Tier 2** — taproot script satisfaction: leaf-hash membership, CSV / CLTV timelocks, hash preimages (VHTLC / Boltz-style conditions).
+- **Tier 3** — `ExitData` persistence via the SDK's `StorageAdapter` interface, `sovereignExit` chain broadcast, `canSovereignExit` preflight.
+
 ### Running the wallet in a service worker
 
 The SDK provides a `MessageBus` orchestrator that runs inside a service worker
