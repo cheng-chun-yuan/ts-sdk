@@ -228,11 +228,15 @@ describe("wallet exit-data sync", () => {
             }),
         } as any;
 
+        const { psbt: treePsbt, txid: treeTxid } = await validPsbtBase64(
+            "aa".repeat(32)
+        );
+
         const mockIndexer = {
             getVtxos: vi.fn().mockImplementation(async (opts?: any) => ({
                 vtxos: [
                     {
-                        txid: "aa".repeat(32),
+                        txid: treeTxid,
                         vout: 0,
                         value: 10_000,
                         status: { confirmed: true },
@@ -256,7 +260,7 @@ describe("wallet exit-data sync", () => {
                         spends: [],
                     },
                     {
-                        txid: "aa".repeat(32),
+                        txid: treeTxid,
                         type: "INDEXER_CHAINED_TX_TYPE_TREE",
                         expiresAt: "",
                         spends: ["cc".repeat(32)],
@@ -264,7 +268,7 @@ describe("wallet exit-data sync", () => {
                 ],
             }),
             getVirtualTxs: vi.fn().mockResolvedValue({
-                txs: [await validPsbtBase64("aa".repeat(32))],
+                txs: [treePsbt],
             }),
             getVtxoTree: vi.fn(),
             getVtxoTreeLeaves: vi.fn(),
@@ -323,7 +327,9 @@ function taprootOutputScript(xOnlyKey: Uint8Array): Uint8Array {
     return script;
 }
 
-async function validPsbtBase64(seedHex: string): Promise<string> {
+async function validPsbtBase64(
+    seedHex: string
+): Promise<{ psbt: string; txid: string }> {
     const tx = new Transaction();
     const inputKey = await SingleKey.fromPrivateKey(
         randomPrivateKeyBytes()
@@ -345,5 +351,8 @@ async function validPsbtBase64(seedHex: string): Promise<string> {
         tapKeySig: new Uint8Array(64).fill(0x22),
     });
 
-    return Buffer.from(tx.toPSBT()).toString("base64");
+    return {
+        psbt: Buffer.from(tx.toPSBT()).toString("base64"),
+        txid: tx.id,
+    };
 }

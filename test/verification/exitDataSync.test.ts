@@ -14,8 +14,9 @@ import { SingleKey } from "../../src/identity/singleKey";
 
 describe("exitDataSync", () => {
     it("builds exit data for a single VTXO", async () => {
-        const indexer = createMockIndexer();
-        const vtxo = makeVtxo("bb".repeat(32));
+        const { psbt, txid } = await buildValidPsbt();
+        const indexer = createMockIndexer(new Map([[txid, psbt]]));
+        const vtxo = makeVtxo(txid);
 
         const result = await buildExitDataForVtxo(vtxo, indexer);
 
@@ -25,10 +26,17 @@ describe("exitDataSync", () => {
     });
 
     it("builds exit data for multiple VTXOs", async () => {
-        const indexer = createMockIndexer();
+        const first = await buildValidPsbt();
+        const second = await buildValidPsbt();
+        const indexer = createMockIndexer(
+            new Map([
+                [first.txid, first.psbt],
+                [second.txid, second.psbt],
+            ])
+        );
 
         const result = await buildExitDataForVtxos(
-            [makeVtxo("bb".repeat(32)), makeVtxo("dd".repeat(32))],
+            [makeVtxo(first.txid), makeVtxo(second.txid)],
             indexer
         );
 
@@ -36,14 +44,34 @@ describe("exitDataSync", () => {
     });
 
     it("syncs built exit data into a repository", async () => {
-        const indexer = createMockIndexer();
+        const { psbt, txid } = await buildValidPsbt();
+        const indexer = createMockIndexer(new Map([[txid, psbt]]));
         const repo = new InMemoryExitDataRepository();
 
-        await syncExitData([makeVtxo("bb".repeat(32))], indexer, repo);
+        await syncExitData([makeVtxo(txid)], indexer, repo);
 
+        expect(await repo.getExitData({ txid, vout: 0 })).not.toBeNull();
+    });
+
+    it("rejects a tampered PSBT whose computed txid does not match the indexer's claim", async () => {
+        const { psbt: honestPsbt, txid: honestTxid } = await buildValidPsbt();
+        const { psbt: forgedPsbt } = await buildValidPsbt();
+
+        // Indexer returns a different PSBT under the claimed txid.
+        const indexer = createMockIndexer(new Map([[honestTxid, forgedPsbt]]));
+        const repo = new InMemoryExitDataRepository();
+
+        await expect(
+            buildExitDataForVtxo(makeVtxo(honestTxid), indexer)
+        ).rejects.toThrow(/integrity check failed/i);
+
+        // syncExitData must catch the rejection instead of persisting bad data.
+        await syncExitData([makeVtxo(honestTxid)], indexer, repo);
         expect(
-            await repo.getExitData({ txid: "bb".repeat(32), vout: 0 })
-        ).not.toBeNull();
+            await repo.getExitData({ txid: honestTxid, vout: 0 })
+        ).toBeNull();
+
+        void honestPsbt;
     });
 });
 
@@ -60,7 +88,7 @@ function makeVtxo(txid: string): VirtualCoin {
     } as VirtualCoin;
 }
 
-function createMockIndexer(): IndexerProvider {
+function createMockIndexer(psbtsByTxid: Map<string, string>): IndexerProvider {
     return {
         getVtxoChain: vi.fn().mockImplementation(async (outpoint) => ({
             chain: [
@@ -79,7 +107,11 @@ function createMockIndexer(): IndexerProvider {
             ],
         })),
         getVirtualTxs: vi.fn().mockImplementation(async (txids: string[]) => ({
-            txs: await Promise.all(txids.map((txid) => validPsbtBase64(txid))),
+            txs: txids.map((t) => {
+                const psbt = psbtsByTxid.get(t);
+                if (!psbt) throw new Error(`unknown txid: ${t}`);
+                return psbt;
+            }),
         })),
         getVtxoTree: vi.fn(),
         getVtxoTreeLeaves: vi.fn(),
@@ -95,7 +127,7 @@ function createMockIndexer(): IndexerProvider {
     } as IndexerProvider;
 }
 
-async function validPsbtBase64(seedHex: string): Promise<string> {
+async function buildValidPsbt(): Promise<{ psbt: string; txid: string }> {
     const tx = new ArkTransaction();
     const inputKey = await SingleKey.fromPrivateKey(
         randomPrivateKeyBytes()
@@ -117,7 +149,7 @@ async function validPsbtBase64(seedHex: string): Promise<string> {
         tapKeySig: new Uint8Array(64).fill(0x22),
     });
 
-    return base64.encode(tx.toPSBT());
+    return { psbt: base64.encode(tx.toPSBT()), txid: tx.id };
 }
 
 function taprootOutputScript(xOnlyKey: Uint8Array): Uint8Array {

@@ -60,9 +60,8 @@ describe("canSovereignExit", () => {
 
     it("returns true with exitPath when the claim timelock has elapsed", async () => {
         const repo = new InMemoryExitDataRepository();
-        const pubKey = await SingleKey.fromPrivateKey(
-            randomPrivateKeyBytes()
-        ).xOnlyPublicKey();
+        const identity = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
+        const pubKey = await identity.xOnlyPublicKey();
         const serverPubKey = await SingleKey.fromPrivateKey(
             randomPrivateKeyBytes()
         ).xOnlyPublicKey();
@@ -85,7 +84,8 @@ describe("canSovereignExit", () => {
         const result = await canSovereignExit(
             data.vtxoOutpoint,
             repo,
-            createMockOnchain({ confirmed: true, blockHeight: 100 })
+            createMockOnchain({ confirmed: true, blockHeight: 100 }),
+            identity
         );
 
         expect(result.canExit).toBe(true);
@@ -243,9 +243,8 @@ describe("canSovereignExit", () => {
 
     it("returns false with timelockRemaining when the CSV is still pending", async () => {
         const repo = new InMemoryExitDataRepository();
-        const pubKey = await SingleKey.fromPrivateKey(
-            randomPrivateKeyBytes()
-        ).xOnlyPublicKey();
+        const identity = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
+        const pubKey = await identity.xOnlyPublicKey();
         const serverPubKey = await SingleKey.fromPrivateKey(
             randomPrivateKeyBytes()
         ).xOnlyPublicKey();
@@ -268,7 +267,8 @@ describe("canSovereignExit", () => {
         const result = await canSovereignExit(
             data.vtxoOutpoint,
             repo,
-            createMockOnchain({ confirmed: true, blockHeight: 100 })
+            createMockOnchain({ confirmed: true, blockHeight: 100 }),
+            identity
         );
 
         expect(result.canExit).toBe(false);
@@ -312,10 +312,11 @@ describe("sovereignExit", () => {
 
     it("broadcasts an unconfirmed virtual transaction and succeeds", async () => {
         const repo = new InMemoryExitDataRepository();
+        const { psbt, txid: treeTxid } = await validPsbtBase64("bb".repeat(32));
         const data = makeExitData();
-        data.virtualTxs = {
-            ["bb".repeat(32)]: await validPsbtBase64("bb".repeat(32)),
-        };
+        data.chain[1].txid = treeTxid;
+        data.virtualTxs = { [treeTxid]: psbt };
+        data.treeNodes = [{ txid: treeTxid, tx: psbt, children: {} }];
         await repo.saveExitData(data);
 
         const onchain = createMockOnchain({ confirmed: true });
@@ -339,15 +340,16 @@ describe("sovereignExit", () => {
         expect(result.steps.some((step) => step.type === "broadcast")).toBe(
             true
         );
-        expect(result.finalTxid).toBe("bb".repeat(32));
+        expect(result.finalTxid).toBe(treeTxid);
     });
 
     it("treats duplicate broadcast errors as non-fatal", async () => {
         const repo = new InMemoryExitDataRepository();
+        const { psbt, txid: treeTxid } = await validPsbtBase64("bb".repeat(32));
         const data = makeExitData();
-        data.virtualTxs = {
-            ["bb".repeat(32)]: await validPsbtBase64("bb".repeat(32)),
-        };
+        data.chain[1].txid = treeTxid;
+        data.virtualTxs = { [treeTxid]: psbt };
+        data.treeNodes = [{ txid: treeTxid, tx: psbt, children: {} }];
         await repo.saveExitData(data);
 
         const onchain = createMockOnchain({ confirmed: true });
@@ -378,10 +380,11 @@ describe("sovereignExit", () => {
         // word "mempool" (e.g. min-relay-fee, mempool-conflict) must NOT
         // be silently swallowed as "already accepted".
         const repo = new InMemoryExitDataRepository();
+        const { psbt, txid: treeTxid } = await validPsbtBase64("bb".repeat(32));
         const data = makeExitData();
-        data.virtualTxs = {
-            ["bb".repeat(32)]: await validPsbtBase64("bb".repeat(32)),
-        };
+        data.chain[1].txid = treeTxid;
+        data.virtualTxs = { [treeTxid]: psbt };
+        data.treeNodes = [{ txid: treeTxid, tx: psbt, children: {} }];
         await repo.saveExitData(data);
 
         const onchain = createMockOnchain({ confirmed: true });
@@ -406,10 +409,11 @@ describe("sovereignExit", () => {
 
     it("surfaces non-duplicate broadcast failures", async () => {
         const repo = new InMemoryExitDataRepository();
+        const { psbt, txid: treeTxid } = await validPsbtBase64("bb".repeat(32));
         const data = makeExitData();
-        data.virtualTxs = {
-            ["bb".repeat(32)]: await validPsbtBase64("bb".repeat(32)),
-        };
+        data.chain[1].txid = treeTxid;
+        data.virtualTxs = { [treeTxid]: psbt };
+        data.treeNodes = [{ txid: treeTxid, tx: psbt, children: {} }];
         await repo.saveExitData(data);
 
         const onchain = createMockOnchain({ confirmed: true });
@@ -478,10 +482,13 @@ describe("sovereignExit", () => {
 
     it("finalizes tapKeySig inputs even when they are not input 0", async () => {
         const repo = new InMemoryExitDataRepository();
+        const { psbt, txid: treeTxid } = await validMultiInputPsbtBase64(
+            "bb".repeat(32)
+        );
         const data = makeExitData();
-        data.virtualTxs = {
-            ["bb".repeat(32)]: await validMultiInputPsbtBase64("bb".repeat(32)),
-        };
+        data.chain[1].txid = treeTxid;
+        data.virtualTxs = { [treeTxid]: psbt };
+        data.treeNodes = [{ txid: treeTxid, tx: psbt, children: {} }];
         await repo.saveExitData(data);
 
         const onchain = createMockOnchain({ confirmed: true });
@@ -589,16 +596,15 @@ describe("sovereignExit", () => {
         // broadcast order is still root→leaf.
         const repo = new InMemoryExitDataRepository();
 
-        const rootTxid = "bb".repeat(32); // spends commitment
-        const midTxid = "dd".repeat(32); // spends rootTxid
-        const leafTxid = "ee".repeat(32); // spends midTxid (= vtxo)
-
-        const rootPsbt = await psbtSpending(rootTxid, "cc".repeat(32));
-        const midPsbt = await psbtSpending(midTxid, rootTxid);
-        const leafPsbt = await psbtSpending(leafTxid, midTxid);
+        // Build each PSBT, then use its actual computed txid to wire up
+        // children — so the stored `virtualTxs` keys match
+        // `Transaction.fromPSBT(...).id`.
+        const root = await psbtSpending("cc".repeat(32));
+        const mid = await psbtSpending(root.txid);
+        const leaf = await psbtSpending(mid.txid);
 
         const data: ExitData = {
-            vtxoOutpoint: { txid: leafTxid, vout: 0 },
+            vtxoOutpoint: { txid: leaf.txid, vout: 0 },
             commitmentTxid: "cc".repeat(32),
             // Intentionally scrambled — not leaf→root, not root→leaf.
             chain: [
@@ -609,28 +615,28 @@ describe("sovereignExit", () => {
                     spends: [],
                 },
                 {
-                    txid: midTxid,
+                    txid: mid.txid,
                     type: "INDEXER_CHAINED_TX_TYPE_TREE" as any,
                     expiresAt: "",
-                    spends: [rootTxid],
+                    spends: [root.txid],
                 },
                 {
-                    txid: leafTxid,
+                    txid: leaf.txid,
                     type: "INDEXER_CHAINED_TX_TYPE_TREE" as any,
                     expiresAt: "",
-                    spends: [midTxid],
+                    spends: [mid.txid],
                 },
                 {
-                    txid: rootTxid,
+                    txid: root.txid,
                     type: "INDEXER_CHAINED_TX_TYPE_TREE" as any,
                     expiresAt: "",
                     spends: ["cc".repeat(32)],
                 },
             ],
             virtualTxs: {
-                [rootTxid]: rootPsbt,
-                [midTxid]: midPsbt,
-                [leafTxid]: leafPsbt,
+                [root.txid]: root.psbt,
+                [mid.txid]: mid.psbt,
+                [leaf.txid]: leaf.psbt,
             },
             treeNodes: [],
             storedAt: Date.now(),
@@ -657,18 +663,14 @@ describe("sovereignExit", () => {
         const broadcastedTxids = result.steps
             .filter((s) => s.type === "broadcast")
             .map((s) => s.txid);
-        expect(broadcastedTxids).toEqual([rootTxid, midTxid, leafTxid]);
-        expect(result.finalTxid).toBe(leafTxid);
+        expect(broadcastedTxids).toEqual([root.txid, mid.txid, leaf.txid]);
+        expect(result.finalTxid).toBe(leaf.txid);
     });
 });
 
 async function psbtSpending(
-    _ownTxid: string,
     parentTxid: string
-): Promise<string> {
-    // Build a PSBT where input[0].txid = parentTxid. The resulting
-    // serialized-tx id will depend on the random key material; the
-    // caller uses its txid() output via broadcastTransaction callback.
+): Promise<{ psbt: string; txid: string }> {
     const tx = new ArkTransaction();
     const inputKey = await SingleKey.fromPrivateKey(
         randomPrivateKeyBytes()
@@ -686,7 +688,7 @@ async function psbtSpending(
         },
         tapKeySig: new Uint8Array(64).fill(0x22),
     });
-    return base64.encode(tx.toPSBT());
+    return { psbt: base64.encode(tx.toPSBT()), txid: tx.id };
 }
 
 function makeExitData(vtxoTxid?: string): ExitData {
@@ -743,7 +745,9 @@ function createMockOnchain(opts: {
     } as OnchainProvider;
 }
 
-async function validPsbtBase64(seedHex: string): Promise<string> {
+async function validPsbtBase64(
+    parentTxid: string
+): Promise<{ psbt: string; txid: string }> {
     const tx = new ArkTransaction();
     const inputKey = await SingleKey.fromPrivateKey(
         randomPrivateKeyBytes()
@@ -756,7 +760,7 @@ async function validPsbtBase64(seedHex: string): Promise<string> {
         amount: 10_000n,
     });
     tx.addInput({
-        txid: hex.decode(seedHex),
+        txid: hex.decode(parentTxid),
         index: 0,
         witnessUtxo: {
             script: taprootOutputScript(inputKey),
@@ -765,10 +769,12 @@ async function validPsbtBase64(seedHex: string): Promise<string> {
         tapKeySig: new Uint8Array(64).fill(0x22),
     });
 
-    return base64.encode(tx.toPSBT());
+    return { psbt: base64.encode(tx.toPSBT()), txid: tx.id };
 }
 
-async function validMultiInputPsbtBase64(seedHex: string): Promise<string> {
+async function validMultiInputPsbtBase64(
+    parentTxid: string
+): Promise<{ psbt: string; txid: string }> {
     const tx = new ArkTransaction();
     const inputKey1 = await SingleKey.fromPrivateKey(
         randomPrivateKeyBytes()
@@ -793,7 +799,7 @@ async function validMultiInputPsbtBase64(seedHex: string): Promise<string> {
         },
     });
     tx.addInput({
-        txid: hex.decode(seedHex),
+        txid: hex.decode(parentTxid),
         index: 0,
         witnessUtxo: {
             script: taprootOutputScript(inputKey2),
@@ -802,7 +808,7 @@ async function validMultiInputPsbtBase64(seedHex: string): Promise<string> {
         tapKeySig: new Uint8Array(64).fill(0x22),
     });
 
-    return base64.encode(tx.toPSBT());
+    return { psbt: base64.encode(tx.toPSBT()), txid: tx.id };
 }
 
 function taprootOutputScript(xOnlyKey: Uint8Array): Uint8Array {

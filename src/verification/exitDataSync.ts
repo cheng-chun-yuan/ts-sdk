@@ -1,16 +1,17 @@
-import { base64, hex } from "@scure/base";
+import { hex } from "@scure/base";
 import type { IndexerProvider } from "../providers/indexer";
 import { ChainTxType } from "../providers/indexer";
 import type { Outpoint, VirtualCoin } from "../wallet";
 import type { ExitData, ExitDataRepository } from "./exitDataStore";
 import { collectExitData } from "./exitDataStore";
+import { parseVirtualTx } from "./virtualTx";
 import type { TxTreeNode } from "../tree/txTree";
-import { Transaction } from "../utils/transaction";
+import type { Transaction } from "../utils/transaction";
 
 function buildTreeNodes(txids: string[], txs: string[]): TxTreeNode[] {
     const parsed = new Map<string, Transaction>();
     for (let i = 0; i < txids.length; i++) {
-        parsed.set(txids[i], Transaction.fromPSBT(base64.decode(txs[i])));
+        parsed.set(txids[i], parseVirtualTx(txids[i], txs[i]));
     }
 
     const childrenByParent = new Map<string, Record<number, string>>();

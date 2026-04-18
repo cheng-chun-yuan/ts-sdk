@@ -1,4 +1,4 @@
-import { hex, base64 } from "@scure/base";
+import { hex } from "@scure/base";
 import { Address, SigHash } from "@scure/btc-signer";
 import { compareBytes } from "@scure/btc-signer/utils.js";
 import type { Outpoint } from "../wallet";
@@ -6,6 +6,7 @@ import type { OnchainProvider } from "../providers/onchain";
 import { ChainTxType } from "../providers/indexer";
 import type { ExitClaimInput, ExitDataRepository } from "./exitDataStore";
 import { validateExitData } from "./exitDataStore";
+import { parseVirtualTx, VirtualTxIntegrityError } from "./virtualTx";
 import { Transaction } from "../utils/transaction";
 import type { Identity } from "../identity";
 import type { Network } from "../networks";
@@ -122,6 +123,18 @@ export async function canSovereignExit(
         return { canExit: true };
     }
 
+    // With a claimInput, the final-claim answer depends on which leaf the
+    // caller can actually sign. Refuse to claim canExit=true without an
+    // identity: otherwise a multi-leaf script (VHTLC-style) could return
+    // canExit=true for a leaf the caller cannot satisfy, and the mismatch
+    // only surfaces inside sovereignExit as a silent wait step.
+    if (!identity) {
+        return {
+            canExit: false,
+            reason: "Identity is required to evaluate claim-path exit leaves",
+        };
+    }
+
     let claimStatus;
     try {
         claimStatus = await onchain.getTxStatus(data.claimInput.txid);
@@ -140,7 +153,7 @@ export async function canSovereignExit(
 
     const vtxoScript = VtxoScript.decode(hex.decode(data.claimInput.tapTree));
     const chainTip = await onchain.getChainTip();
-    const signerPubkey = identity ? await identity.xOnlyPublicKey() : undefined;
+    const signerPubkey = await identity.xOnlyPublicKey();
     const hasPreimage = Boolean(preimage && preimage.length > 0);
     const exit = availableExitPath(
         { height: claimStatus.blockHeight, time: claimStatus.blockTime },
@@ -280,7 +293,7 @@ export async function sovereignExit(
 
         // Finalize the PSBT and broadcast
         try {
-            const tx = Transaction.fromPSBT(base64.decode(psbt));
+            const tx = parseVirtualTx(txid, psbt);
             let sawTapKeySig = false;
             let sawTapScriptSig = false;
 
@@ -563,12 +576,17 @@ function topoSortChainTxIds(
 
         let tx: Transaction;
         try {
-            tx = Transaction.fromPSBT(base64.decode(psbt));
-        } catch {
-            // PSBT isn't parseable — treat as having no known deps.
-            // The broadcast loop will surface a real error if we attempt
-            // to broadcast it; if the tx is already confirmed onchain it
-            // will be skipped and the bad PSBT never matters.
+            tx = parseVirtualTx(txid, psbt);
+        } catch (err) {
+            // Integrity failures mean the stored PSBT was substituted and
+            // would broadcast a different tx than the chain promises —
+            // abort rather than depend on the broadcast loop to notice.
+            // Pure parse failures (unparseable PSBT) stay lenient: the
+            // broadcast loop will reject them when it tries to finalize,
+            // and an already-confirmed tx is skipped there.
+            if (err instanceof VirtualTxIntegrityError) {
+                return { order: [], error: err.message };
+            }
             deps.set(txid, new Set());
             continue;
         }
