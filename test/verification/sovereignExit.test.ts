@@ -602,9 +602,9 @@ describe("sovereignExit", () => {
         // Build each PSBT, then use its actual computed txid to wire up
         // children — so the stored `virtualTxs` keys match
         // `Transaction.fromPSBT(...).id`.
-        const root = await psbtSpending("cc".repeat(32));
-        const mid = await psbtSpending(root.txid);
-        const leaf = await psbtSpending(mid.txid);
+        const root = await validPsbtBase64("cc".repeat(32));
+        const mid = await validPsbtBase64(root.txid);
+        const leaf = await validPsbtBase64(mid.txid);
 
         const data: ExitData = {
             vtxoOutpoint: { txid: leaf.txid, vout: 0 },
@@ -670,29 +670,6 @@ describe("sovereignExit", () => {
         expect(result.finalTxid).toBe(leaf.txid);
     });
 });
-
-async function psbtSpending(
-    parentTxid: string
-): Promise<{ psbt: string; txid: string }> {
-    const tx = new ArkTransaction();
-    const inputKey = await SingleKey.fromPrivateKey(
-        randomPrivateKeyBytes()
-    ).xOnlyPublicKey();
-    const outputKey = await SingleKey.fromPrivateKey(
-        randomPrivateKeyBytes()
-    ).xOnlyPublicKey();
-    tx.addOutput({ script: taprootOutputScript(outputKey), amount: 10_000n });
-    tx.addInput({
-        txid: hex.decode(parentTxid),
-        index: 0,
-        witnessUtxo: {
-            script: taprootOutputScript(inputKey),
-            amount: 10_000n,
-        },
-        tapKeySig: new Uint8Array(64).fill(0x22),
-    });
-    return { psbt: base64.encode(tx.toPSBT()), txid: tx.id };
-}
 
 function makeExitData(vtxoTxid?: string): ExitData {
     const txid = vtxoTxid ?? "aa".repeat(32);
