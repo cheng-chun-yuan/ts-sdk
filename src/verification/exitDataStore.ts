@@ -4,6 +4,14 @@ import { ChainTxType } from "../providers/indexer";
 import type { TxTreeNode } from "../tree/txTree";
 import { hex } from "@scure/base";
 
+/**
+ * Structural type used by wallet wiring and sovereignExit to accept any
+ * persistence backend for unilateral exit data. The only implementation
+ * shipped with the SDK is `ExitDataStore` in ./exitDataRepository.ts,
+ * which is storage-adapter backed; tests compose it with
+ * `InMemoryStorageAdapter`.
+ */
+
 export interface ExitClaimInput {
     txid: string;
     vout: number;
@@ -37,10 +45,6 @@ export interface ExitData {
     storedAt: number;
 }
 
-/**
- * Repository interface for persisting unilateral exit data.
- * Extends the existing storage adapter pattern used by WalletRepository.
- */
 export interface ExitDataRepository {
     /** Save exit data for a VTXO */
     saveExitData(data: ExitData): Promise<void>;
@@ -125,35 +129,4 @@ export function validateExitData(data: ExitData): {
     }
 
     return { valid: errors.length === 0, errors };
-}
-
-/**
- * In-memory implementation of ExitDataRepository for testing.
- */
-export class InMemoryExitDataRepository implements ExitDataRepository {
-    private store = new Map<string, ExitData>();
-
-    private key(outpoint: Outpoint): string {
-        return `${outpoint.txid}:${outpoint.vout}`;
-    }
-
-    async saveExitData(data: ExitData): Promise<void> {
-        this.store.set(this.key(data.vtxoOutpoint), data);
-    }
-
-    async getExitData(outpoint: Outpoint): Promise<ExitData | null> {
-        return this.store.get(this.key(outpoint)) ?? null;
-    }
-
-    async getAllExitData(): Promise<ExitData[]> {
-        return [...this.store.values()];
-    }
-
-    async deleteExitData(outpoint: Outpoint): Promise<void> {
-        this.store.delete(this.key(outpoint));
-    }
-
-    async clear(): Promise<void> {
-        this.store.clear();
-    }
 }

@@ -9,7 +9,8 @@ import {
     InMemoryContractRepository,
     InMemoryWalletRepository,
 } from "../../src/repositories";
-import { InMemoryExitDataRepository } from "../../src/verification/exitDataStore";
+import { ExitDataStore } from "../../src/verification/exitDataRepository";
+import { InMemoryStorageAdapter } from "../../src/storage/inMemory";
 
 /**
  * Lightweight contract tests for the standalone client-side verification API.
@@ -216,7 +217,7 @@ describe("wallet exit-data sync", () => {
         const signerPubkey = await SingleKey.fromPrivateKey(
             randomPrivateKeyBytes()
         ).compressedPublicKey();
-        const exitRepo = new InMemoryExitDataRepository();
+        const exitRepo = new ExitDataStore(new InMemoryStorageAdapter());
 
         const mockArkProvider = {
             getInfo: vi.fn().mockResolvedValue({

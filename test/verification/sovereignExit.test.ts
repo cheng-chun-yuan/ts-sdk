@@ -6,8 +6,11 @@ import {
     sovereignExit,
     canSovereignExit,
 } from "../../src/verification/sovereignExit";
-import { InMemoryExitDataRepository } from "../../src/verification/exitDataStore";
+import { ExitDataStore } from "../../src/verification/exitDataRepository";
 import type { ExitData } from "../../src/verification/exitDataStore";
+import { InMemoryStorageAdapter } from "../../src/storage/inMemory";
+
+const newExitRepo = () => new ExitDataStore(new InMemoryStorageAdapter());
 import type { OnchainProvider } from "../../src/providers/onchain";
 import { Transaction as ArkTransaction } from "../../src/utils/transaction";
 import { SingleKey } from "../../src/identity/singleKey";
@@ -17,7 +20,7 @@ import { getNetwork } from "../../src/networks";
 
 describe("canSovereignExit", () => {
     it("returns true when exit data exists and the commitment is confirmed", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const data = makeExitData();
         await repo.saveExitData(data);
 
@@ -31,7 +34,7 @@ describe("canSovereignExit", () => {
     });
 
     it("returns false when no exit data is stored", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
 
         const result = await canSovereignExit(
             { txid: "ff".repeat(32), vout: 0 },
@@ -44,7 +47,7 @@ describe("canSovereignExit", () => {
     });
 
     it("returns false when the commitment is not confirmed", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const data = makeExitData();
         await repo.saveExitData(data);
 
@@ -59,7 +62,7 @@ describe("canSovereignExit", () => {
     });
 
     it("returns true with exitPath when the claim timelock has elapsed", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const identity = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
         const pubKey = await identity.xOnlyPublicKey();
         const serverPubKey = await SingleKey.fromPrivateKey(
@@ -125,7 +128,7 @@ describe("canSovereignExit", () => {
             },
         });
 
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const data = makeExitData("bb".repeat(32));
         data.claimInput = {
             txid: "bb".repeat(32),
@@ -198,7 +201,7 @@ describe("canSovereignExit", () => {
             },
         });
 
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const data = makeExitData("bb".repeat(32));
         data.claimInput = {
             txid: "bb".repeat(32),
@@ -242,7 +245,7 @@ describe("canSovereignExit", () => {
     });
 
     it("returns false with timelockRemaining when the CSV is still pending", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const identity = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
         const pubKey = await identity.xOnlyPublicKey();
         const serverPubKey = await SingleKey.fromPrivateKey(
@@ -279,7 +282,7 @@ describe("canSovereignExit", () => {
 
 describe("sovereignExit", () => {
     it("fails when no exit data is stored", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const result = await sovereignExit(
             { txid: "ff".repeat(32), vout: 0 },
             repo,
@@ -293,7 +296,7 @@ describe("sovereignExit", () => {
     });
 
     it("fails fast when stored exit data is invalid", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const data = makeExitData();
         data.commitmentTxid = "";
         await repo.saveExitData(data);
@@ -311,7 +314,7 @@ describe("sovereignExit", () => {
     });
 
     it("broadcasts an unconfirmed virtual transaction and succeeds", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const { psbt, txid: treeTxid } = await validPsbtBase64("bb".repeat(32));
         const data = makeExitData();
         data.chain[1].txid = treeTxid;
@@ -344,7 +347,7 @@ describe("sovereignExit", () => {
     });
 
     it("treats duplicate broadcast errors as non-fatal", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const { psbt, txid: treeTxid } = await validPsbtBase64("bb".repeat(32));
         const data = makeExitData();
         data.chain[1].txid = treeTxid;
@@ -379,7 +382,7 @@ describe("sovereignExit", () => {
         // Regression: broadcast rejections that happen to contain the
         // word "mempool" (e.g. min-relay-fee, mempool-conflict) must NOT
         // be silently swallowed as "already accepted".
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const { psbt, txid: treeTxid } = await validPsbtBase64("bb".repeat(32));
         const data = makeExitData();
         data.chain[1].txid = treeTxid;
@@ -408,7 +411,7 @@ describe("sovereignExit", () => {
     });
 
     it("surfaces non-duplicate broadcast failures", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const { psbt, txid: treeTxid } = await validPsbtBase64("bb".repeat(32));
         const data = makeExitData();
         data.chain[1].txid = treeTxid;
@@ -437,7 +440,7 @@ describe("sovereignExit", () => {
     });
 
     it("skips already-confirmed virtual transactions", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const data = makeExitData();
         await repo.saveExitData(data);
 
@@ -453,7 +456,7 @@ describe("sovereignExit", () => {
     });
 
     it("fails when a PSBT is missing for an unconfirmed transaction", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const data = makeExitData();
         data.virtualTxs = {};
         await repo.saveExitData(data);
@@ -481,7 +484,7 @@ describe("sovereignExit", () => {
     });
 
     it("finalizes tapKeySig inputs even when they are not input 0", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const { psbt, txid: treeTxid } = await validMultiInputPsbtBase64(
             "bb".repeat(32)
         );
@@ -505,7 +508,7 @@ describe("sovereignExit", () => {
     });
 
     it("does not require ASP services during exit", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const data = makeExitData();
         await repo.saveExitData(data);
 
@@ -519,7 +522,7 @@ describe("sovereignExit", () => {
     });
 
     it("builds and broadcasts the final claim transaction when claim data is stored", async () => {
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
         const identity = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
         const pubKey = await identity.xOnlyPublicKey();
         const serverPubKey = await SingleKey.fromPrivateKey(
@@ -594,7 +597,7 @@ describe("sovereignExit", () => {
         // reverse it. A corrupted / re-ordered chain would broadcast in
         // the wrong order. This test scrambles data.chain and checks the
         // broadcast order is still root→leaf.
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
 
         // Build each PSBT, then use its actual computed txid to wire up
         // children — so the stored `virtualTxs` keys match

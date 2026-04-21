@@ -7,14 +7,12 @@ type StoredIndex = string[];
 /**
  * Persist ExitData through any StorageAdapter implementation.
  *
- * This class is environment-agnostic: it takes a StorageAdapter
- * instance and does not import the Node / browser / React Native
- * adapters directly. Callers construct the right adapter for their
- * environment (e.g. `new FileSystemStorageAdapter(dir)` on Node) and
- * pass it here. Keeping this file free of environment-specific imports
- * prevents bundlers from pulling `fs` into browser builds.
+ * Environment-agnostic: takes a StorageAdapter instance and does not
+ * import Node / browser / React Native adapters directly, so bundlers
+ * do not pull `fs` into browser builds. Tests compose it with
+ * `InMemoryStorageAdapter` from `../storage`.
  */
-export class StorageAdapterExitDataRepository implements ExitDataRepository {
+export class ExitDataStore implements ExitDataRepository {
     // Serializes read-modify-write of the namespace index so concurrent
     // saveExitData / deleteExitData calls (fanned out by syncExitData via
     // Promise.allSettled) can't stomp on each other's appends.

@@ -41,14 +41,10 @@ export type {
     ParentConfirmation,
 } from "./scriptVerifier";
 
-export {
-    collectExitData,
-    validateExitData,
-    InMemoryExitDataRepository,
-} from "./exitDataStore";
+export { collectExitData, validateExitData } from "./exitDataStore";
 export type { ExitData, ExitDataRepository } from "./exitDataStore";
 
-export { StorageAdapterExitDataRepository } from "./exitDataRepository";
+export { ExitDataStore } from "./exitDataRepository";
 
 export {
     buildExitDataForVtxo,

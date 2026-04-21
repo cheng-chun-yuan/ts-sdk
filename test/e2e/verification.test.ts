@@ -4,8 +4,8 @@ import { Transaction } from "@scure/btc-signer";
 import { hash160 } from "@scure/btc-signer/utils.js";
 import {
     EsploraProvider,
+    ExitDataStore,
     InMemoryContractRepository,
-    InMemoryExitDataRepository,
     InMemoryWalletRepository,
     networks,
     RestArkProvider,
@@ -16,6 +16,7 @@ import {
     Wallet,
     type IndexerProvider,
 } from "../../src";
+import { InMemoryStorageAdapter } from "../../src/storage/inMemory";
 import {
     arkdExec,
     beforeEachFaucet,
@@ -352,7 +353,9 @@ describe("verifyVtxo — regtest integration", () => {
             // sovereignExit walk a real chain without the final-claim
             // options so we only exercise the tree-walk path.
             const identity = createTestIdentity();
-            const exitDataRepository = new InMemoryExitDataRepository();
+            const exitDataRepository = new ExitDataStore(
+                new InMemoryStorageAdapter()
+            );
             const alice = {
                 identity,
                 wallet: await Wallet.create({
