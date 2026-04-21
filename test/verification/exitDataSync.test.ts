@@ -4,7 +4,6 @@ import type { IndexerProvider } from "../../src/providers/indexer";
 import type { VirtualCoin } from "../../src/wallet";
 import {
     buildExitDataForVtxo,
-    buildExitDataForVtxos,
     syncExitData,
 } from "../../src/verification/exitDataSync";
 import { ExitDataStore } from "../../src/verification/exitDataRepository";
@@ -26,24 +25,6 @@ describe("exitDataSync", () => {
         expect(result.vtxoOutpoint.txid).toBe(vtxo.txid);
         expect(result.commitmentTxid).toBe("cc".repeat(32));
         expect(result.treeNodes).toHaveLength(1);
-    });
-
-    it("builds exit data for multiple VTXOs", async () => {
-        const first = await buildValidPsbt();
-        const second = await buildValidPsbt();
-        const indexer = createMockIndexer(
-            new Map([
-                [first.txid, first.psbt],
-                [second.txid, second.psbt],
-            ])
-        );
-
-        const result = await buildExitDataForVtxos(
-            [makeVtxo(first.txid), makeVtxo(second.txid)],
-            indexer
-        );
-
-        expect(result).toHaveLength(2);
     });
 
     it("syncs built exit data into a repository", async () => {

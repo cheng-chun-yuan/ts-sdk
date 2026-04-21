@@ -46,11 +46,7 @@ export type { ExitData, ExitDataRepository } from "./exitDataStore";
 
 export { ExitDataStore } from "./exitDataRepository";
 
-export {
-    buildExitDataForVtxo,
-    buildExitDataForVtxos,
-    syncExitData,
-} from "./exitDataSync";
+export { buildExitDataForVtxo, syncExitData } from "./exitDataSync";
 
 export { sovereignExit, canSovereignExit } from "./sovereignExit";
 export type {

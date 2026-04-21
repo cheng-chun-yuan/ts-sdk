@@ -232,7 +232,6 @@ export {
     validateExitData,
     ExitDataStore,
     buildExitDataForVtxo,
-    buildExitDataForVtxos,
     syncExitData,
     sovereignExit,
     canSovereignExit,
