@@ -4,10 +4,12 @@ import type { IndexerProvider } from "../../src/providers/indexer";
 import type { VirtualCoin } from "../../src/wallet";
 import {
     buildExitDataForVtxo,
-    buildExitDataForVtxos,
     syncExitData,
 } from "../../src/verification/exitDataSync";
-import { InMemoryExitDataRepository } from "../../src/verification/exitDataStore";
+import { ExitDataStore } from "../../src/verification/exitDataRepository";
+import { InMemoryStorageAdapter } from "../../src/storage/inMemory";
+
+const newExitRepo = () => new ExitDataStore(new InMemoryStorageAdapter());
 import { Transaction as ArkTransaction } from "../../src/utils/transaction";
 import { randomPrivateKeyBytes } from "@scure/btc-signer/utils.js";
 import { SingleKey } from "../../src/identity/singleKey";
@@ -25,28 +27,10 @@ describe("exitDataSync", () => {
         expect(result.treeNodes).toHaveLength(1);
     });
 
-    it("builds exit data for multiple VTXOs", async () => {
-        const first = await buildValidPsbt();
-        const second = await buildValidPsbt();
-        const indexer = createMockIndexer(
-            new Map([
-                [first.txid, first.psbt],
-                [second.txid, second.psbt],
-            ])
-        );
-
-        const result = await buildExitDataForVtxos(
-            [makeVtxo(first.txid), makeVtxo(second.txid)],
-            indexer
-        );
-
-        expect(result).toHaveLength(2);
-    });
-
     it("syncs built exit data into a repository", async () => {
         const { psbt, txid } = await buildValidPsbt();
         const indexer = createMockIndexer(new Map([[txid, psbt]]));
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
 
         await syncExitData([makeVtxo(txid)], indexer, repo);
 
@@ -59,7 +43,7 @@ describe("exitDataSync", () => {
 
         // Indexer returns a different PSBT under the claimed txid.
         const indexer = createMockIndexer(new Map([[honestTxid, forgedPsbt]]));
-        const repo = new InMemoryExitDataRepository();
+        const repo = newExitRepo();
 
         await expect(
             buildExitDataForVtxo(makeVtxo(honestTxid), indexer)

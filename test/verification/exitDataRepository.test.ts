@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StorageAdapter } from "../../src/storage";
-import { StorageAdapterExitDataRepository } from "../../src/verification/exitDataRepository";
+import { ExitDataStore } from "../../src/verification/exitDataRepository";
 import type { ExitData } from "../../src/verification/exitDataStore";
 
 class MemoryStorageAdapter implements StorageAdapter {
@@ -23,11 +23,9 @@ class MemoryStorageAdapter implements StorageAdapter {
     }
 }
 
-describe("StorageAdapterExitDataRepository", () => {
+describe("ExitDataStore", () => {
     it("saves and retrieves exit data through the adapter", async () => {
-        const repo = new StorageAdapterExitDataRepository(
-            new MemoryStorageAdapter()
-        );
+        const repo = new ExitDataStore(new MemoryStorageAdapter());
         const data = makeExitData();
 
         await repo.saveExitData(data);
@@ -38,9 +36,7 @@ describe("StorageAdapterExitDataRepository", () => {
     });
 
     it("lists all saved exit data entries", async () => {
-        const repo = new StorageAdapterExitDataRepository(
-            new MemoryStorageAdapter()
-        );
+        const repo = new ExitDataStore(new MemoryStorageAdapter());
 
         await repo.saveExitData(makeExitData("aa".repeat(32)));
         await repo.saveExitData(makeExitData("bb".repeat(32)));
@@ -50,9 +46,7 @@ describe("StorageAdapterExitDataRepository", () => {
     });
 
     it("deletes a single exit data entry", async () => {
-        const repo = new StorageAdapterExitDataRepository(
-            new MemoryStorageAdapter()
-        );
+        const repo = new ExitDataStore(new MemoryStorageAdapter());
         const data = makeExitData();
         await repo.saveExitData(data);
 
@@ -67,9 +61,7 @@ describe("StorageAdapterExitDataRepository", () => {
         // syncExitData fans out saves via Promise.allSettled, so a
         // concurrent writer would overwrite siblings' appends and drop
         // entries from getAllExitData / clear.
-        const repo = new StorageAdapterExitDataRepository(
-            new MemoryStorageAdapter()
-        );
+        const repo = new ExitDataStore(new MemoryStorageAdapter());
         const entries = Array.from({ length: 10 }, (_, i) => {
             const hexByte = i.toString(16).padStart(2, "0");
             return makeExitData(hexByte.repeat(32));
@@ -82,9 +74,7 @@ describe("StorageAdapterExitDataRepository", () => {
     });
 
     it("keeps the index consistent under concurrent saves and deletes", async () => {
-        const repo = new StorageAdapterExitDataRepository(
-            new MemoryStorageAdapter()
-        );
+        const repo = new ExitDataStore(new MemoryStorageAdapter());
         const entries = Array.from({ length: 6 }, (_, i) => {
             const hexByte = i.toString(16).padStart(2, "0");
             return makeExitData(hexByte.repeat(32));

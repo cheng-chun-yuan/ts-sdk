@@ -90,15 +90,6 @@ export async function buildExitDataForVtxo(
     );
 }
 
-export async function buildExitDataForVtxos(
-    vtxos: VirtualCoin[],
-    indexer: IndexerProvider
-): Promise<ExitData[]> {
-    return Promise.all(
-        vtxos.map((vtxo) => buildExitDataForVtxo(vtxo, indexer))
-    );
-}
-
 export async function syncExitData(
     vtxos: VirtualCoin[],
     indexer: IndexerProvider,

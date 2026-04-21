@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
     collectExitData,
     validateExitData,
-    InMemoryExitDataRepository,
 } from "../../src/verification/exitDataStore";
 import type { ExitData } from "../../src/verification/exitDataStore";
 import type { VirtualCoin } from "../../src/wallet";
@@ -111,62 +110,6 @@ describe("validateExitData", () => {
         const result = validateExitData(data);
         expect(result.valid).toBe(false);
         expect(result.errors.length).toBeGreaterThanOrEqual(2);
-    });
-});
-
-describe("InMemoryExitDataRepository", () => {
-    it("should save and retrieve exit data", async () => {
-        const repo = new InMemoryExitDataRepository();
-        const data = makeExitData();
-
-        await repo.saveExitData(data);
-        const retrieved = await repo.getExitData(data.vtxoOutpoint);
-
-        expect(retrieved).not.toBeNull();
-        expect(retrieved!.vtxoOutpoint.txid).toBe(data.vtxoOutpoint.txid);
-    });
-
-    it("should return null for non-existent outpoint", async () => {
-        const repo = new InMemoryExitDataRepository();
-        const result = await repo.getExitData({
-            txid: "ff".repeat(32),
-            vout: 0,
-        });
-
-        expect(result).toBeNull();
-    });
-
-    it("should delete exit data", async () => {
-        const repo = new InMemoryExitDataRepository();
-        const data = makeExitData();
-
-        await repo.saveExitData(data);
-        await repo.deleteExitData(data.vtxoOutpoint);
-        const result = await repo.getExitData(data.vtxoOutpoint);
-
-        expect(result).toBeNull();
-    });
-
-    it("should return all stored exit data", async () => {
-        const repo = new InMemoryExitDataRepository();
-        const data1 = makeExitData("a1".repeat(32));
-        const data2 = makeExitData("a2".repeat(32));
-
-        await repo.saveExitData(data1);
-        await repo.saveExitData(data2);
-        const all = await repo.getAllExitData();
-
-        expect(all).toHaveLength(2);
-    });
-
-    it("should clear all exit data", async () => {
-        const repo = new InMemoryExitDataRepository();
-        await repo.saveExitData(makeExitData());
-
-        await repo.clear();
-        const all = await repo.getAllExitData();
-
-        expect(all).toHaveLength(0);
     });
 });
 
