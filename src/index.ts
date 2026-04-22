@@ -228,10 +228,18 @@ export {
     verifyCLTV,
     verifyHashPreimage,
     verifyScriptSatisfaction,
+    collectExitData,
+    validateExitData,
+    ExitDataStore,
+    buildExitDataForVtxo,
+    syncExitData,
+    sovereignExit,
+    canSovereignExit,
 } from "./verification";
 export type {
     VtxoVerificationResult,
     VtxoVerificationOptions,
+    PartialChecks,
     AnchorVerification,
     CheckpointVerificationResult,
     CheckpointTimelockResult,
@@ -241,6 +249,11 @@ export type {
     ScriptVerificationResult,
     ChainTip,
     ParentConfirmation,
+    ExitData,
+    ExitDataRepository,
+    SovereignExitStep,
+    SovereignExitResult,
+    SovereignExitOptions,
 } from "./verification";
 
 // Contracts

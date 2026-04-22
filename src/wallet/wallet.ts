@@ -108,6 +108,16 @@ import {
     getAllSyncCursors,
     updateWalletState,
 } from "../utils/syncCursors";
+import type { ExitDataRepository } from "../verification/exitDataStore";
+import { syncExitData } from "../verification/exitDataSync";
+import {
+    verifyAllVtxos as verifyAllStoredVtxos,
+    verifyVtxo as verifyStoredVtxo,
+} from "../verification/vtxoChainVerifier";
+import type {
+    VtxoVerificationOptions,
+    VtxoVerificationResult,
+} from "../verification/vtxoChainVerifier";
 
 export type IncomingFunds =
     | {
@@ -166,7 +176,8 @@ export class ReadonlyWallet implements IReadonlyWallet {
         public readonly walletRepository: WalletRepository,
         public readonly contractRepository: ContractRepository,
         readonly delegatorProvider?: DelegatorProvider,
-        watcherConfig?: ReadonlyWalletConfig["watcherConfig"]
+        watcherConfig?: ReadonlyWalletConfig["watcherConfig"],
+        protected readonly exitDataRepository?: ExitDataRepository
     ) {
         // Guard: detect identity/server network mismatch for descriptor-based identities.
         // This duplicates the check in setupWalletConfig() so that subclasses
@@ -318,6 +329,7 @@ export class ReadonlyWallet implements IReadonlyWallet {
         const contractRepository =
             config.storage?.contractRepository ??
             new IndexedDBContractRepository();
+        const exitDataRepository = config.storage?.exitDataRepository;
 
         return {
             arkProvider,
@@ -331,6 +343,7 @@ export class ReadonlyWallet implements IReadonlyWallet {
             dustAmount: info.dust,
             walletRepository,
             contractRepository,
+            exitDataRepository,
             info,
             delegatorProvider: config.delegatorProvider,
         };
@@ -362,7 +375,8 @@ export class ReadonlyWallet implements IReadonlyWallet {
             setup.walletRepository,
             setup.contractRepository,
             setup.delegatorProvider,
-            config.watcherConfig
+            config.watcherConfig,
+            setup.exitDataRepository
         );
     }
 
@@ -529,7 +543,7 @@ export class ReadonlyWallet implements IReadonlyWallet {
      * subsequent callers receive the same promise instead of triggering
      * a second network round-trip.
      */
-    private syncVtxos(): Promise<{
+    protected syncVtxos(): Promise<{
         isDelta: boolean;
         fetchedExtended: ExtendedVirtualCoin[];
         address: string;
@@ -570,6 +584,7 @@ export class ReadonlyWallet implements IReadonlyWallet {
 
         const requestStartedAt = Date.now();
         const allVtxos: VirtualCoin[] = [];
+        const changedExtended: ExtendedVirtualCoin[] = [];
 
         const extendWithScript = (
             vtxo: VirtualCoin
@@ -615,6 +630,7 @@ export class ReadonlyWallet implements IReadonlyWallet {
             const extended = extendWithScript(vtxo);
             if (extended) fetchedExtended.push(extended);
         }
+        changedExtended.push(...fetchedExtended);
         // Save virtual outputs first, then advance cursors only on success.
         const cutoff = cursorCutoff(requestStartedAt);
         await this.walletRepository.saveVtxos(address, fetchedExtended);
@@ -701,6 +717,10 @@ export class ReadonlyWallet implements IReadonlyWallet {
                         address,
                         reconciledExtended
                     );
+                    // Feed reconciled (now-spent or state-changed) VTXOs
+                    // into the exit-data sync below so stale exit data for
+                    // coins no longer spendable gets deleted.
+                    changedExtended.push(...reconciledExtended);
                 }
             } else {
                 console.warn(
@@ -709,11 +729,46 @@ export class ReadonlyWallet implements IReadonlyWallet {
             }
         }
 
+        await this.syncStoredExitData(changedExtended);
+
         return {
             isDelta: hasDelta || bootstrapScripts.length === 0,
             fetchedExtended,
             address,
         };
+    }
+
+    protected async syncStoredExitData(
+        vtxos: ExtendedVirtualCoin[]
+    ): Promise<void> {
+        if (!this.exitDataRepository || vtxos.length === 0) {
+            return;
+        }
+
+        const spendable = vtxos.filter(isSpendable);
+        if (spendable.length > 0) {
+            try {
+                await syncExitData(
+                    spendable,
+                    this.indexerProvider,
+                    this.exitDataRepository
+                );
+            } catch (error) {
+                console.warn("failed to sync exit data", error);
+            }
+        }
+
+        const stale = vtxos.filter((vtxo) => !isSpendable(vtxo));
+        for (const vtxo of stale) {
+            try {
+                await this.exitDataRepository.deleteExitData({
+                    txid: vtxo.txid,
+                    vout: vtxo.vout,
+                });
+            } catch (error) {
+                console.warn("failed to delete stale exit data", error);
+            }
+        }
     }
 
     /**
@@ -865,7 +920,14 @@ export class ReadonlyWallet implements IReadonlyWallet {
                             return { txid, vout, value, status };
                         });
 
-                    // and notify via callback
+                    if (coins.length === 0) {
+                        return;
+                    }
+
+                    // Surface both mempool and confirmed events; the
+                    // esplora watcher fires the callback on each state
+                    // change, and UIs want the "pending deposit" hint
+                    // the moment a tx hits the mempool.
                     eventCallback({
                         type: "utxo",
                         coins,
@@ -906,6 +968,14 @@ export class ReadonlyWallet implements IReadonlyWallet {
                             update.newVtxos?.length > 0 ||
                             update.spentVtxos?.length > 0
                         ) {
+                            if (this.exitDataRepository) {
+                                void this.syncVtxos().catch((error) => {
+                                    console.warn(
+                                        "failed to refresh exit data after indexer update",
+                                        error
+                                    );
+                                });
+                            }
                             eventCallback({
                                 type: "vtxo",
                                 newVtxos: update.newVtxos.map((vtxo) =>
@@ -1267,7 +1337,8 @@ export class Wallet extends ReadonlyWallet implements IWallet {
         renewalConfig?: WalletConfig["renewalConfig"],
         delegatorProvider?: DelegatorProvider,
         watcherConfig?: WalletConfig["watcherConfig"],
-        settlementConfig?: WalletConfig["settlementConfig"]
+        settlementConfig?: WalletConfig["settlementConfig"],
+        exitDataRepository?: ExitDataRepository
     ) {
         super(
             identity,
@@ -1281,7 +1352,8 @@ export class Wallet extends ReadonlyWallet implements IWallet {
             walletRepository,
             contractRepository,
             delegatorProvider,
-            watcherConfig
+            watcherConfig,
+            exitDataRepository
         );
         this.identity = identity;
 
@@ -1420,7 +1492,8 @@ export class Wallet extends ReadonlyWallet implements IWallet {
             config.renewalConfig,
             config.delegatorProvider,
             config.watcherConfig,
-            config.settlementConfig
+            config.settlementConfig,
+            setup.exitDataRepository
         );
 
         await wallet.getVtxoManager();
@@ -1463,13 +1536,46 @@ export class Wallet extends ReadonlyWallet implements IWallet {
             this.walletRepository,
             this.contractRepository,
             this.delegatorProvider,
-            this.watcherConfig
+            this.watcherConfig,
+            this.exitDataRepository
         );
     }
 
     /** Returns the delegator manager when delegation support is configured. */
     async getDelegatorManager(): Promise<IDelegatorManager | undefined> {
         return this._delegatorManager;
+    }
+
+    async verifyVtxo(
+        vtxo: VirtualCoin,
+        options?: VtxoVerificationOptions
+    ): Promise<VtxoVerificationResult> {
+        return verifyStoredVtxo(
+            vtxo,
+            this.indexerProvider,
+            this.onchainProvider,
+            {
+                pubkey: this.arkServerPublicKey,
+                sweepInterval: this.serverUnrollScript.params.timelock,
+            },
+            options
+        );
+    }
+
+    async verifyAllVtxos(
+        options?: VtxoVerificationOptions
+    ): Promise<Map<string, VtxoVerificationResult>> {
+        const vtxos = await this.getVtxos({ withRecoverable: true });
+        return verifyAllStoredVtxos(
+            vtxos,
+            this.indexerProvider,
+            this.onchainProvider,
+            {
+                pubkey: this.arkServerPublicKey,
+                sweepInterval: this.serverUnrollScript.params.timelock,
+            },
+            options
+        );
     }
 
     /**
@@ -1814,6 +1920,9 @@ export class Wallet extends ReadonlyWallet implements IWallet {
             });
 
             await this.updateDbAfterSettle(params.inputs, commitmentTxid);
+            if (this.exitDataRepository) {
+                await this.syncVtxos();
+            }
 
             return commitmentTxid;
         } catch (error) {
@@ -2778,6 +2887,9 @@ export class Wallet extends ReadonlyWallet implements IWallet {
 
             await this.walletRepository.saveVtxos(
                 addr,
+                changeVtxo ? [...spentVtxos, changeVtxo] : spentVtxos
+            );
+            await this.syncStoredExitData(
                 changeVtxo ? [...spentVtxos, changeVtxo] : spentVtxos
             );
 
