@@ -27,3 +27,16 @@ export type {
     CheckpointVerificationResult,
     CheckpointTimelockResult,
 } from "./checkpointVerifier";
+
+export {
+    verifyTaprootScriptTree,
+    verifyCSV,
+    verifyCLTV,
+    verifyHashPreimage,
+    verifyScriptSatisfaction,
+} from "./scriptVerifier";
+export type {
+    ScriptVerificationResult,
+    ChainTip,
+    ParentConfirmation,
+} from "./scriptVerifier";

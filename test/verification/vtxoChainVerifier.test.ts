@@ -302,20 +302,27 @@ describe("verifyVtxo", () => {
         });
 
         it("should support root transactions that aggregate multiple inputs", async () => {
-            const { tx: commit1, rawHex: commitHex1 } =
-                await buildCommitmentTx(20_000n);
-            const { tx: commit2, rawHex: commitHex2 } =
-                await buildCommitmentTx(7_000n);
+            const sharedVtxoScript = await makeCsvVtxoScript();
+            const { tx: commit1, rawHex: commitHex1 } = await buildCommitmentTx(
+                20_000n,
+                sharedVtxoScript.pkScript
+            );
+            const { tx: commit2, rawHex: commitHex2 } = await buildCommitmentTx(
+                7_000n,
+                sharedVtxoScript.pkScript
+            );
             const multiInputTx = await buildCsvPathTx({
                 parentTxid: commit1.id,
-                parentOutputScript: commit1.getOutput(0)?.script,
+                parentOutputScript: sharedVtxoScript.pkScript,
                 amount: 20_000n,
                 sequence: 144,
+                vtxoScript: sharedVtxoScript,
                 extraInputs: [
                     {
                         txid: commit2.id,
                         amount: 7_000n,
-                        witnessScript: commit2.getOutput(0)?.script,
+                        witnessScript: sharedVtxoScript.pkScript,
+                        tapLeafScript: [sharedVtxoScript.leaves[0]],
                     },
                 ],
             });
@@ -395,21 +402,28 @@ describe("verifyVtxo", () => {
         });
 
         it("should accept a valid root tx when the commitment link is not input 0", async () => {
-            const { tx: commit1, rawHex: commitHex1 } =
-                await buildCommitmentTx(20_000n);
-            const { tx: commit2, rawHex: commitHex2 } =
-                await buildCommitmentTx(0n);
+            const sharedVtxoScript = await makeCsvVtxoScript();
+            const { tx: commit1, rawHex: commitHex1 } = await buildCommitmentTx(
+                20_000n,
+                sharedVtxoScript.pkScript
+            );
+            const { tx: commit2, rawHex: commitHex2 } = await buildCommitmentTx(
+                0n,
+                sharedVtxoScript.pkScript
+            );
             const secondaryInput = await buildCsvInput({
                 parentTxid: commit2.id,
-                parentOutputScript: commit2.getOutput(0)?.script,
+                parentOutputScript: sharedVtxoScript.pkScript,
                 amount: 0n,
                 sequence: 144,
+                vtxoScript: sharedVtxoScript,
             });
             const commitmentInput = await buildCsvInput({
                 parentTxid: commit1.id,
-                parentOutputScript: commit1.getOutput(0)?.script,
+                parentOutputScript: sharedVtxoScript.pkScript,
                 amount: 20_000n,
                 sequence: 144,
+                vtxoScript: sharedVtxoScript,
             });
             const outputKey = await SingleKey.fromPrivateKey(
                 randomPrivateKeyBytes()
@@ -898,13 +912,15 @@ describe("verifyVtxo", () => {
         });
 
         it("should stay valid when only outspend lookup degrades to a warning", async () => {
+            const sharedVtxoScript = await makeCsvVtxoScript();
             const { tx: commitmentTx, rawHex: commitmentHex } =
-                await buildCommitmentTx(10_000n);
+                await buildCommitmentTx(10_000n, sharedVtxoScript.pkScript);
             const csvTx = await buildCsvPathTx({
                 parentTxid: commitmentTx.id,
-                parentOutputScript: commitmentTx.getOutput(0)?.script,
+                parentOutputScript: sharedVtxoScript.pkScript,
                 amount: 10_000n,
                 sequence: 144,
+                vtxoScript: sharedVtxoScript,
             });
             const vtxo = makeVtxo(csvTx.id, [commitmentTx.id]);
 
@@ -1111,8 +1127,6 @@ describe("verifyVtxo", () => {
         });
 
         it("should verify a valid multi-hop path even when chain entries are out of order", async () => {
-            const { tx: commitmentTx, rawHex: commitmentHex } =
-                await buildCommitmentTx(10_000n);
             const parentInputSigner = SingleKey.fromPrivateKey(
                 randomPrivateKeyBytes()
             );
@@ -1125,6 +1139,11 @@ describe("verifyVtxo", () => {
             const parentInputVtxoScript = new VtxoScript([
                 parentInputScript.script,
             ]);
+            const { tx: commitmentTx, rawHex: commitmentHex } =
+                await buildCommitmentTx(
+                    10_000n,
+                    parentInputVtxoScript.pkScript
+                );
             const childCosignerKey = SingleKey.fromPrivateKey(
                 randomPrivateKeyBytes()
             );
@@ -2266,18 +2285,22 @@ function taprootOutputScript(xOnlyKey: Uint8Array): Uint8Array {
     return script;
 }
 
-async function buildCommitmentTx(amount: bigint) {
+async function buildCommitmentTx(amount: bigint, outputScript?: Uint8Array) {
     const tx = new ArkTransaction();
-    const outputKey = await SingleKey.fromPrivateKey(
-        randomPrivateKeyBytes()
-    ).xOnlyPublicKey();
+    let script = outputScript;
+    if (!script) {
+        const outputKey = await SingleKey.fromPrivateKey(
+            randomPrivateKeyBytes()
+        ).xOnlyPublicKey();
+        script = taprootOutputScript(outputKey);
+    }
 
     tx.addInput({
         txid: new Uint8Array(32).fill(0x01),
         index: 0,
     });
     tx.addOutput({
-        script: taprootOutputScript(outputKey),
+        script,
         amount,
     });
 
@@ -2285,6 +2308,16 @@ async function buildCommitmentTx(amount: bigint) {
         tx,
         rawHex: hex.encode(tx.toBytes()),
     };
+}
+
+async function makeCsvVtxoScript(): Promise<VtxoScript> {
+    const signer = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
+    const signerPubkey = await signer.xOnlyPublicKey();
+    const csvScript = CSVMultisigTapscript.encode({
+        timelock: { value: 144n, type: "blocks" },
+        pubkeys: [signerPubkey],
+    });
+    return new VtxoScript([csvScript.script]);
 }
 
 async function buildCsvPathTx(opts: {
@@ -2300,14 +2333,9 @@ async function buildCsvPathTx(opts: {
         sequence?: number;
     }[];
     txLocktime?: number;
+    vtxoScript?: VtxoScript;
 }) {
-    const signer = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
-    const signerPubkey = await signer.xOnlyPublicKey();
-    const csvScript = CSVMultisigTapscript.encode({
-        timelock: { value: 144n, type: "blocks" },
-        pubkeys: [signerPubkey],
-    });
-    const vtxoScript = new VtxoScript([csvScript.script]);
+    const vtxoScript = opts.vtxoScript ?? (await makeCsvVtxoScript());
 
     const tx = new ArkTransaction({
         lockTime: opts.txLocktime,
@@ -2352,14 +2380,9 @@ async function buildCsvInput(opts: {
     parentOutputScript?: Uint8Array;
     amount: bigint;
     sequence: number;
+    vtxoScript?: VtxoScript;
 }) {
-    const signer = SingleKey.fromPrivateKey(randomPrivateKeyBytes());
-    const signerPubkey = await signer.xOnlyPublicKey();
-    const csvScript = CSVMultisigTapscript.encode({
-        timelock: { value: 144n, type: "blocks" },
-        pubkeys: [signerPubkey],
-    });
-    const vtxoScript = new VtxoScript([csvScript.script]);
+    const vtxoScript = opts.vtxoScript ?? (await makeCsvVtxoScript());
 
     return {
         txid: hex.decode(opts.parentTxid),
